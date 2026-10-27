@@ -92,7 +92,7 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `esmar-journal-${journalDay || "today"}.md`;
+      a.download = `meteora-journal-${journalDay || "today"}.md`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("Журнал скачан");

@@ -122,7 +122,7 @@ export function journalConfig(payload: Record<string, unknown>) {
   try {
     if (fs.existsSync(file) && fs.statSync(file).size > 200) return;
     const body = [
-      `# Журнал ${dayKey()} · ESMAR bot`,
+      `# Журнал ${dayKey()} · METEORA Terminal`,
       "",
       "> Формат строки: `[время] ТИП сообщение `{\"ctx\":…}`` — время локальное, контекст в JSON.",
       "> Типы: ENTER/EXIT_* — сделки · RANGE_OUT/BACK — выход из сетки · REBALANCE — перестройка сетки ·",

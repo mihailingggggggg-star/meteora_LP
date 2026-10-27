@@ -352,7 +352,7 @@ export default function DashboardPage() {
                       const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
                       const a = document.createElement("a");
                       a.href = url;
-                      a.download = `esmar-journal-${new Date().toISOString().slice(0, 10)}.md`;
+                      a.download = `meteora-journal-${new Date().toISOString().slice(0, 10)}.md`;
                       a.click();
                       URL.revokeObjectURL(url);
                     } catch {

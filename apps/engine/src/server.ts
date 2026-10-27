@@ -515,7 +515,7 @@ export function startServer() {
         const text = readJournalFull(day);
         res.writeHead(200, {
           "content-type": "text/markdown; charset=utf-8",
-          "content-disposition": `attachment; filename="esmar-journal-${day}.md"`,
+          "content-disposition": `attachment; filename="meteora-journal-${day}.md"`,
           "cache-control": "no-store",
         });
         return res.end(text || `# Журнал ${day}\n\nзаписей нет`);
