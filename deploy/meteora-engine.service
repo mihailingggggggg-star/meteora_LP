@@ -1,5 +1,5 @@
 [Unit]
-Description=Meteora Terminal — торговый движок (API :8787)
+Description=Meteora Terminal — торговый движок (API на 127.0.0.1)
 After=network-online.target
 Wants=network-online.target
 
@@ -17,6 +17,27 @@ TimeoutStopSec=15
 StandardOutput=append:/opt/meteora-terminal/.run/engine.log
 StandardError=append:/opt/meteora-terminal/.run/engine.log
 LimitNOFILE=65535
+
+# ── изоляция: процессу нужны только запись в data/journal/.run и сеть
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/opt/meteora-terminal/data /opt/meteora-terminal/journal /opt/meteora-terminal/.run
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -76,7 +76,8 @@ export type JournalType =
   | "EXIT_VOLATILITY"
   | "EXIT_FLOW"
   | "DUPLICATE"
-  | "MANUAL";
+  | "MANUAL"
+  | "LIVE";
 
 /** Компактный контекст: убираем пустые поля и округляем числа — журнал не должен пухнуть. */
 function compactCtx(value: unknown, depth = 0): unknown {
@@ -106,8 +107,10 @@ function compactCtx(value: unknown, depth = 0): unknown {
   return undefined;
 }
 
+/** Только YYYY-MM-DD: дата приходит из query-параметра, обход каталога недопустим. */
 function fileFor(day = dayKey()) {
-  return path.join(dir, `${day}.md`);
+  const safe = /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : dayKey();
+  return path.join(dir, `${safe}.md`);
 }
 
 /** Шапка дня: один раз, с полной конфигурацией — по ней ИИ поймёт, в каких условиях шла торговля. */

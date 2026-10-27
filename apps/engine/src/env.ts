@@ -91,4 +91,28 @@ export const env = {
     exitCostPct: num(process.env.FRICTION_PCT, 0.15),
   },
   wsolMint: "So11111111111111111111111111111111111111112",
+  /** резервный RPC: переключаемся на него, если основной вернул ошибку */
+  rpcFallback: process.env.SOLANA_RPC_FALLBACK_URL || "",
+
+  // ── боевой контур
+  // Ничего из этого блока не включается само: нужны и BOT_MODE=live, и LIVE_EXECUTION=true,
+  // и валидный ключ кошелька. Пока условия не выполнены — работает демо-симуляция.
+  live: {
+    enabled: bool(process.env.LIVE_EXECUTION, false),
+    secret: (process.env.TRADING_WALLET_SECRET_BASE58 || "").trim(),
+    pubkey: (process.env.TRADING_WALLET_PUBKEY || "").trim(),
+    encryptionKey: (process.env.WALLET_ENCRYPTION_KEY || "").trim(),
+    /** жёсткий лимит на одну позицию в долларах (0 — без отдельного лимита) */
+    maxPositionUsd: num(process.env.LIVE_MAX_POSITION_USD, 100),
+    /** одновременно не больше 3 позиций */
+    maxPositions: Math.min(3, num(process.env.LIVE_MAX_POSITIONS, 3)),
+    slippagePct: num(process.env.LIVE_SLIPPAGE_PCT, 1.5),
+    priorityFeeMicroLamports: num(process.env.LIVE_PRIORITY_FEE_MICROLAMPORTS, 50_000),
+    /** сколько SOL держим на газ и аренду позиций — не тратим на ликвидность */
+    minSolReserve: num(process.env.LIVE_MIN_SOL_RESERVE, 0.03),
+    /** как часто сверяем состояние кошелька с базой */
+    reconcileMinutes: num(process.env.LIVE_RECONCILE_MINUTES, 10),
+    /** расхождение капитала, при котором останавливаемся и зовём человека, % */
+    driftAlertPct: num(process.env.LIVE_DRIFT_ALERT_PCT, 5),
+  },
 };

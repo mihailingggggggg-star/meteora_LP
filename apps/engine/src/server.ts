@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
 import { engine, swapWatcher } from "./engine.js";
@@ -7,18 +8,38 @@ import { db } from "./db.js";
 import { dayKey, journal, journalDays, readJournal, readJournalFull } from "./journal.js";
 import { event } from "./db.js";
 import { env } from "./env.js";
+import * as live from "./executor.js";
 
+// CORS здесь не нужен: браузер общается с движком только через next-прокси
+// (тот же origin), а сам движок слушает 127.0.0.1. Заголовка `*` больше нет.
 const json = (res: http.ServerResponse, code: number, body: unknown) => {
   const data = JSON.stringify(body);
   res.writeHead(code, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
   });
   res.end(data);
 };
+
+/**
+ * Локальный API движка: если в .env задан ENGINE_TOKEN, каждый запрос обязан
+ * принести `Authorization: Bearer <токен>`. Без токена работает только dev-режим
+ * (движок и так недоступен извне — слушает 127.0.0.1).
+ */
+const ENGINE_TOKEN = (process.env.ENGINE_TOKEN || "").trim();
+
+function authorized(req: http.IncomingMessage): boolean {
+  if (!ENGINE_TOKEN) return true;
+  const h = String(req.headers.authorization || "");
+  const got = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+  if (!got) return false;
+  const a = Buffer.from(got, "utf8");
+  const b = Buffer.from(ENGINE_TOKEN, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** `YYYY-MM-DD` — иначе путь к журналу собирать нельзя. */
+const isDayKey = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
 const readBody = async (req: http.IncomingMessage): Promise<any> => {
   const chunks: Buffer[] = [];
@@ -268,6 +289,15 @@ export function startServer() {
     const p = url.pathname;
     const q = url.searchParams;
 
+    // ── доступ к локальному API: только с токеном (если он задан в .env)
+    if (!authorized(req)) {
+      res.writeHead(401, {
+        "content-type": "application/json; charset=utf-8",
+        "www-authenticate": "Bearer",
+      });
+      return res.end(JSON.stringify({ error: "unauthorized" }));
+    }
+
     if (req.method === "OPTIONS") return json(res, 204, {});
 
     try {
@@ -385,11 +415,19 @@ export function startServer() {
         }
         return json(res, 200, { pools: out.slice(0, 10), watching: swapWatcher.list() });
       }
+      if (p === "/api/live/status") return json(res, 200, live.status());
+      if (p === "/api/live/reconcile") {
+        if (!live.armed()) return json(res, 200, { ok: true, skipped: "демо-режим", notes: [] });
+        const out = await live.reconcile();
+        if (!out.ok) journal("WARN", `сверка с цепочкой: расхождение`, out);
+        return json(res, 200, out);
+      }
       if (p === "/api/analytics") return json(res, 200, analytics(q));
       if (p === "/api/journal") {
         const nowD = new Date();
         const localDay = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, "0")}-${String(nowD.getDate()).padStart(2, "0")}`;
-        const date = q.get("date") || localDay;
+        const asked = q.get("date");
+        const date = isDayKey(asked) ? asked : localDay;
         return json(res, 200, { date, lines: readJournal(date) });
       }
       if (p === "/api/events") {
@@ -468,11 +506,12 @@ export function startServer() {
       }
       if (p === "/api/settings" && req.method === "POST") {
         const body = await readBody(req);
-        engine.applySettings(body);
-        return json(res, 200, engine.state());
+        const applied = engine.applySettings(body);
+        return json(res, 200, { ...engine.state(), applied });
       }
       if (p === "/api/journal/download") {
-        const day = q.get("date") || dayKey();
+        const asked = q.get("date");
+        const day = isDayKey(asked) ? asked : dayKey();
         const text = readJournalFull(day);
         res.writeHead(200, {
           "content-type": "text/markdown; charset=utf-8",

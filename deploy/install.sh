@@ -85,8 +85,26 @@ if [[ ! -f "$DST/.env" ]]; then
   chown meteora:meteora "$DST/.env"
   die "создан $DST/.env из шаблона — заполните HELIUS_API_KEY, AUTH_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD и запустите снова"
 fi
+# секреты генерируем сами (ручной ввод — источник слабых паролей и забытых дефолтов)
+gen_secret() { openssl rand -base64 32 | tr -d '\n=+/' | cut -c1-44; }
+ensure_secret() {
+  local key="$1" value="$2"
+  local cur
+  cur="$(grep -E "^$key=" "$DST/.env" | head -1 | cut -d= -f2- || true)"
+  if [[ -z "$cur" ]]; then
+    if grep -qE "^$key=" "$DST/.env"; then
+      sed -i -E "s|^$key=.*|$key=$value|" "$DST/.env"
+    else
+      echo "$key=$value" >> "$DST/.env"
+    fi
+    log "сгенерирован $key"
+  fi
+}
+ensure_secret AUTH_SECRET "$(gen_secret)"
+ensure_secret ENGINE_TOKEN "$(gen_secret)"
+
 missing=()
-for k in HELIUS_API_KEY AUTH_SECRET ADMIN_EMAIL ADMIN_PASSWORD; do
+for k in HELIUS_API_KEY ADMIN_EMAIL ADMIN_PASSWORD; do
   val="$(grep -E "^$k=" "$DST/.env" | head -1 | cut -d= -f2- || true)"
   [[ -z "$val" ]] && missing+=("$k")
 done
@@ -153,6 +171,18 @@ systemctl daemon-reload
 systemctl enable meteora-engine meteora-web >/dev/null
 systemctl restart meteora-engine meteora-web
 
+# ── бэкап базы: раз в сутки в 03:00, храним 14 копий
+if [[ -f "$DST/deploy/backup.sh" ]]; then
+  chmod +x "$DST/deploy/backup.sh"
+  mkdir -p "$DST/data/backups"
+  CRON_LINE="0 3 * * * /usr/bin/env bash $DST/deploy/backup.sh >> $DST/.run/backup.log 2>&1"
+  if ! crontab -l 2>/dev/null | grep -qF "$DST/deploy/backup.sh"; then
+    { crontab -l 2>/dev/null || true; echo "$CRON_LINE"; } | crontab -
+    log "cron: ежедневный бэкап базы (03:00, хранение 14 дней)"
+  fi
+  chown -R meteora:meteora "$DST/data" 2>/dev/null || true
+fi
+
 # ── 6. постоянный адрес: не ломаем то, что уже стоит на сервере
 log "веб-сервер и HTTPS: https://$HOST"
 if systemctl is-active --quiet caddy || [[ -f /etc/caddy/Caddyfile ]]; then
@@ -177,7 +207,10 @@ $HOST {
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
         X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+        -Server
     }
 }
 $END
@@ -246,6 +279,7 @@ cat <<EOF
   Ссылка:   https://$HOST
   Логин:    $(grep -E '^ADMIN_EMAIL=' "$DST/.env" | cut -d= -f2-)
   Пароль:   из ADMIN_PASSWORD в $DST/.env
+  Секреты:  AUTH_SECRET и ENGINE_TOKEN сгенерированы автоматически (chmod 600)
 
   Порты:    web 127.0.0.1:$WEB_PORT · engine 127.0.0.1:$ENGINE_PORT (наружу не открыты)
   Статус:   systemctl status meteora-engine meteora-web

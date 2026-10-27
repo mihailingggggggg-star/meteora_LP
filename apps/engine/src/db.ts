@@ -185,3 +185,34 @@ try {
 } catch {
   /* колонка уже есть */
 }
+
+// ── журнал операций в цепочке: идемпотентность и аудит каждого шага
+db.exec(`
+CREATE TABLE IF NOT EXISTS onchain_ops (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  pool TEXT,
+  position_pubkey TEXT,
+  signature TEXT,
+  amount_usd REAL,
+  payload TEXT,
+  error TEXT,
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_onchain_ops_pos ON onchain_ops(position_id, kind, status);
+`);
+
+// ссылка позиции на её аккаунт в DLMM (нужна для выхода/клейма)
+try {
+  db.exec(`ALTER TABLE positions ADD COLUMN onchain_pubkey TEXT`);
+} catch {
+  /* колонка уже есть */
+}
+try {
+  db.exec(`ALTER TABLE positions ADD COLUMN open_signature TEXT`);
+} catch {
+  /* колонка уже есть */
+}

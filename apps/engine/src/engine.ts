@@ -1,4 +1,6 @@
 import { env } from "./env.js";
+import * as live from "./executor.js";
+import { alert, alertCritical } from "./alerts.js";
 import { db, event, getSetting, setSetting } from "./db.js";
 import { journal, journalConfig, journalSettings, readJournal, type JournalType } from "./journal.js";
 import { fetchPools, fetchPool, isSolPair, splitPair, type Pool } from "./meteora.js";
@@ -94,6 +96,50 @@ const TF_MAP: Record<string, TfConf> = {
   "1h": { gecko: { timeframe: "hour", aggregate: 1, limit: 336 }, meteora: { timeframe: "1h", hours: 168 } },
   "4h": { gecko: { timeframe: "hour", aggregate: 4, limit: 300 }, meteora: { timeframe: "4h", hours: 720 } },
   "1d": { gecko: { timeframe: "day", aggregate: 1, limit: 200 }, meteora: { timeframe: "24h", hours: 2000 } },
+};
+
+/**
+ * Белый список изменяемых настроек и допустимые границы.
+ *
+ * Раньше POST /api/settings слепо мержил любые ключи: из интерфейса (или из
+ * локального процесса) можно было поставить maxPositions=99, отрицательный
+ * депозит или frictionPct=0 — то есть обойти жёсткие лимиты риска.
+ * Теперь всё, чего нет в этой таблице, отклоняется.
+ */
+const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean }> = {
+  maxAtrPct: { min: 0.1, max: 50 },
+  minTurnover: { min: 0, max: 100 },
+  maxTurnover: { min: 0, max: 1000 },
+  minPoolTvl: { min: 0, max: 1e9 },
+  minTxns24h: { min: 0, max: 1e7, int: true },
+  minHolders: { min: 0, max: 1e7, int: true },
+  minVol1h: { min: 0, max: 1e9 },
+  minAgeHours: { min: 0, max: 1e5 },
+  rangeAtrMult: { min: 0.1, max: 10 },
+  maxRangePct: { min: 0.2, max: 50 },
+  budgetPct: { min: 1, max: 100 },
+  frictionPct: { min: 0, max: 5 },
+  maxLossPerTradePct: { min: 0.1, max: 100 },
+  maxDailyLossPct: { min: 0.1, max: 100 },
+  utilization: { min: 0.05, max: 1 },
+  // жёсткий предел: одновременно не больше 3 позиций — из UI это не обходится
+  maxPositions: { min: 1, max: 3, int: true },
+  maxRebalancesPerDay: { min: 0, max: 100, int: true },
+  consecutiveLossStop: { min: 1, max: 20, int: true },
+  earlyExitTurnover: { min: 0, max: 100 },
+  earlyExitAtrPct: { min: 0, max: 100 },
+  profitTakePct: { min: 0, max: 1000 },
+  targetDailyPct: { min: 0, max: 100 },
+  claimIntervalHours: { min: 0.1, max: 720 },
+  maxHoldHours: { min: 0.5, max: 720 },
+  rangeBreakMinutes: { min: 1, max: 240 },
+  claimThresholdPct: { min: 0, max: 100 },
+  scanIntervalSeconds: { min: 15, max: 3600 },
+  exitCostPct: { min: 0, max: 10 },
+};
+
+const SETTINGS_ENUM: Record<string, string[]> = {
+  distribution: ["spot", "curve", "uniform"],
 };
 
 export const swapWatcher = new SwapWatcher();
@@ -947,6 +993,35 @@ export class Engine {
       equity: this.deposit,
     };
     this.positions.push(pos);
+
+    // ── боевой контур: та же позиция, но реальной ликвидностью в пуле.
+    // Если транзакция не прошла — откатываем запись, останавливаемся и зовём человека:
+    // «фантомная» позиция в базе опаснее, чем пропущенная сделка.
+    if (live.armed()) {
+      try {
+        const ks = plan.bins.map((b) => b.k);
+        await live.openPosition({
+          positionId: id,
+          pool: plan.pool,
+          capitalUsd: capital,
+          minK: Math.min(...ks),
+          maxK: Math.max(...ks),
+          solPriceUsd: pair.solPrice > 0 ? pair.solPrice : 200,
+        });
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        journal("ERROR", `pos#${id}: открытие в цепочке не удалось — ${msg}`, { position: id, pool: plan.pool.name, error: msg });
+        this.halted = true;
+        this.haltReason = `live open: ${msg}`;
+        db.prepare(`DELETE FROM positions WHERE id = ?`).run(id);
+        this.positions = this.positions.filter((p) => p.id !== id);
+        this.cash += capital;
+        this.persist();
+        await alertCritical(`Не удалось открыть позицию ${plan.pool.name}: ${msg}\nТорговля остановлена.`);
+        return;
+      }
+    }
+
     this.persist();
 
     journal(
@@ -1248,6 +1323,18 @@ export class Engine {
     const claimByTime = now - pos.claimedAt > this.settings.claimIntervalHours * 3600_000;
     const claimBySize = pos.feesAccrued >= pos.capital * (env.strategy.claimThresholdPct / 100);
     if ((claimByTime || claimBySize) && pos.feesAccrued > 0.01) {
+      if (live.armed()) {
+        try {
+          await live.claimFees(pos.id, pos.pool.address);
+        } catch (err: any) {
+          journal("ERROR", `pos#${pos.id}: клейм в цепочке не удался — ${err?.message ?? err}`, {
+            position: pos.id,
+            error: String(err?.message ?? err),
+          });
+          await alert(`клейм pos#${pos.id} не выполнен: ${err?.message ?? err}`, `claim-${pos.id}`);
+          return; // комиссии остаются в feesAccrued — повторим на следующем тике
+        }
+      }
       const claimed = pos.feesAccrued;
       pos.feesClaimed += claimed;
       pos.feesAccrued = 0;
@@ -1486,6 +1573,23 @@ export class Engine {
   async closePositionById(id: number, reason: string, priceOverride?: number) {
     const pos = this.positions.find((p) => p.id === id);
     if (!pos) return;
+
+    // в боевом режиме сначала выходим из пула, и только потом фиксируем результат в базе
+    if (live.armed()) {
+      try {
+        await live.closePosition(pos.id, pos.pool.address, reason);
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        journal("ERROR", `pos#${pos.id}: выход из пула не удался — ${msg}`, { position: pos.id, reason, error: msg });
+        this.halted = true;
+        this.haltReason = `live close: ${msg}`;
+        await alertCritical(
+          `Не удалось закрыть pos#${pos.id} (${pos.pool.name}): ${msg}\nПозиция осталась в пуле, торговля остановлена.`,
+        );
+        return;
+      }
+    }
+
     const price = priceOverride ?? pos.lastPrice;
     const rel = price / pos.entryPrice;
     const { value: fairUsd, tokenUsd } = positionValue(pos.bins, rel);
@@ -1629,13 +1733,60 @@ export class Engine {
   }
 
   /** Обновление настроек: пишем в журнал только изменённые параметры. */
+  /**
+   * Патч настроек: только известные ключи, только значения в допустимых пределах.
+   * Неизвестные параметры и выход за границы отклоняются и возвращаются в `rejected`
+   * (интерфейс показывает их, журнал фиксирует причину).
+   */
   applySettings(patch: Record<string, unknown>) {
-    const prev = { ...this.settings } as Record<string, unknown>;
-    const next = { ...prev, ...patch } as Record<string, unknown>;
+    const prev = { ...this.settings } as Record<string, any>;
+    const next: Record<string, any> = { ...prev };
+    const accepted: string[] = [];
+    const rejected: { key: string; value: unknown; reason: string }[] = [];
+
+    for (const [key, raw] of Object.entries(patch ?? {})) {
+      if (SETTINGS_ENUM[key]) {
+        const value = String(raw);
+        if (!SETTINGS_ENUM[key].includes(value)) {
+          rejected.push({ key, value: raw, reason: `допустимо: ${SETTINGS_ENUM[key].join(" | ")}` });
+          continue;
+        }
+        next[key] = value;
+        accepted.push(key);
+        continue;
+      }
+
+      const rule = SETTINGS_LIMITS[key];
+      if (!rule) {
+        rejected.push({ key, value: raw, reason: "неизвестный параметр" });
+        continue;
+      }
+
+      const value = typeof raw === "number" ? raw : Number(String(raw).replace(",", ".").trim());
+      if (!Number.isFinite(value)) {
+        rejected.push({ key, value: raw, reason: "не число" });
+        continue;
+      }
+      const scaled = rule.int ? Math.round(value) : value;
+      const clamped = Math.min(rule.max, Math.max(rule.min, scaled));
+      if (clamped !== value) rejected.push({ key, value: raw, reason: `ограничено до ${clamped}` });
+      next[key] = clamped;
+      accepted.push(key);
+    }
+
+    if (!accepted.length) {
+      return { changed: [], rejected, settings: this.settings };
+    }
+
     this.settings = next as typeof this.settings;
     journalSettings(prev, next);
     setSetting("engine.settings", this.settings);
-    return { changed: Object.keys(patch), settings: this.settings };
+    if (rejected.length) {
+      journal("SETTINGS", `отклонены параметры: ${rejected.map((r) => `${r.key} (${r.reason})`).join(", ")}`, {
+        rejected,
+      });
+    }
+    return { changed: accepted, rejected, settings: this.settings };
   }
 
   /** PnL за период = изменение капитала с начала периода (а не сумма сделок). */

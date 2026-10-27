@@ -195,3 +195,67 @@ awk -F= '/^TRADING_WALLET_SECRET_BASE58=|^AUTH_SECRET=|^ADMIN_PASSWORD=/{print $
 # 5. Зависимости
 npm audit
 ```
+
+---
+
+# ЧАСТЬ 3. Что исправлено и реализовано (27.10.2026)
+
+## 3.1 Безопасность — статус
+
+| # | Было | Стало | Файл |
+|---|---|---|---|
+| S-01 | Next 14.2.23 (обход middleware) | **Next 14.2.35**, сборка проходит | `apps/web/package.json` |
+| S-02 | нет защиты от подбора | 5 попыток / 10 мин → блок IP на 10 мин, задержка 300 мс, лог попыток | `app/api/auth/login/route.ts` |
+| S-03 | `.env` + база в архиве | `bundle.sh` исключает `.env*`; база — только по `--with-data` | `deploy/bundle.sh` |
+| S-04 | дефолт `dev-secret-change-me` | **fail-closed**: без `AUTH_SECRET` в prod сессии не читаются и не выдаются, вход → 503 | `lib/session.ts` |
+| S-05 | plaintext-сравнение | `timingSafeEqual` по SHA-256, оба поля всегда сравниваются | `login/route.ts` |
+| S-06 | CORS `*`, API без токена | CORS убран; при заданном `ENGINE_TOKEN` — обязательный `Authorization: Bearer` | `engine/src/server.ts` |
+| S-07 | `applySettings` без валидации | белый список + клампы + enum; `maxPositions` жёстко ≤ 3; отказы возвращаются в UI и журнал | `engine/src/engine.ts` |
+| S-08 | нет CSP | CSP, `X-Frame-Options: DENY`, `Permissions-Policy`, `COOP`; в Caddy добавлены заголовки | `next.config.mjs`, `install.sh` |
+| S-09 | mint без валидации | base58 `^[1-9A-HJ-NP-Za-km-z]{32,44}$`, иначе заглушка | `app/api/icon/route.ts` |
+| S-10 | дата без валидации | `^\d{4}-\d{2}-\d{2}$` и в API, и в `fileFor()` | `server.ts`, `journal.ts` |
+| S-11 | нет бэкапов | `deploy/backup.sh` (sqlite3 .backup + gzip, 14 копий) + cron 03:00 в `install.sh` | `deploy/` |
+| S-12 | systemd без hardening | `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths`, `SystemCallFilter`, `UMask=0077` | `deploy/*.service` |
+| S-13 | сессия «навсегда», нет логов | лог успешных/неудачных входов, `WWW-Authenticate`, `retry-after` | `login/route.ts` |
+| S-14 | 15 уязвимостей, среди них обход авторизации Next | **CVE-2025-29927 закрыт** (14.2.35). Осталось 15 записей audit: DoS-класс в Next (фиксы только в 15/16 — миграция с ломкой API), транзитивные `bigint-buffer`/`toml`/`uuid`/`postcss` в Solana-SDK. Эксплуатация требует недоверенного ввода; принято как риск, зафиксировано в 3.4 | — |
+
+## 3.2 Боевой режим — реализовано
+
+Новый слой `apps/engine/src/executor.ts` (≈500 строк) + `alerts.ts`:
+
+- **Реальные операции DLMM**: `initializePositionAndAddLiquidityByStrategy`, `removeLiquidity(…, shouldClaimAndClose: true)`, `claimSwapFee`.
+- **Подпись**: base58 / JSON / `enc:` (AES-256-GCM через `WALLET_ENCRYPTION_KEY`); сверка ключа с `TRADING_WALLET_PUBKEY`; утилита `scripts/encrypt-wallet.ts`.
+- **Три условия включения** (`armed()`): `BOT_MODE=live` + `LIVE_EXECUTION=true` + валидный ключ. Иначе — прежняя симуляция без изменений.
+- **Лимиты в исполнителе**: ≤ 3 позиций, `LIVE_MAX_POSITION_USD` (урезает сумму), слиппедж, приоритетная комиссия, неприкосновенный резерв SOL.
+- **Идемпотентность**: таблица `onchain_ops` (pending → confirmed/failed, `signature`, `position_pubkey`), проверка незавершённых операций.
+- **Инвариант «сначала цепочка, потом база»**: при ошибке открытия — откат записи и `HALT`; при ошибке закрытия — запись не создаётся, `HALT` + алерт.
+- **Сверка с цепочкой** каждые `LIVE_RECONCILE_MINUTES`: «есть в базе, нет в пуле» → остановка и алерт; резерв SOL ниже нормы → алерт.
+- **Резервный RPC**: при ошибке основного — `SOLANA_RPC_FALLBACK_URL`.
+- **Алерты в Telegram** (`TG_BOT_TOKEN`, `TG_CHAT_ID`), троттлинг 5 мин; критические — мгновенно.
+- **API**: `/api/live/status`, `/api/live/reconcile`; в UI — карточка «Боевой режим» в Кабинете (armed, лимиты, причины блокировки, последние операции, кнопка сверки).
+
+Документация запуска: `docs/12-LIVE-MODE.md`. Переменные: `LIVE_*` в `.env.example`.
+
+## 3.3 Проверено вживую
+
+| Проверка | Результат |
+|---|---|
+| `tsc --noEmit` движка | ✅ 0 ошибок |
+| `next build` | ✅ 11 страниц, middleware 32.4 kB |
+| логин: 6 попыток с неверным паролем | ✅ 401 ×4 → 429 (блокировка) |
+| прокси `/api/engine/*` без сессии | ✅ 401 |
+| CSP и заголовки на `/login` | ✅ присутствуют |
+| логин → cookie → `/api/engine/live/status` | ✅ 200, данные движка |
+| токен движка: без/с/неверным | ✅ 401 / 200 / 401 |
+| `POST /api/settings {"maxPositions":99}` | ✅ `ограничено до 3`, unknown-ключи отклонены |
+| загрузка зашифрованного ключа | ✅ `armed: true`, адрес совпал |
+| ключ не совпал с `TRADING_WALLET_PUBKEY` | ✅ `armed: false`, понятная ошибка |
+| открытие с 0 SOL | ✅ guard: `недостаточно SOL: есть 0.0000, нужно 0.0578` |
+
+## 3.4 Что осталось до реального боевого запуска
+
+1. Devnet-прогон 48 часов (полный цикл сделки) — нужен ключ и время.
+2. Mainnet на малой сумме неделю под ручным контролем.
+3. `npm audit fix` после обновления Solana SDK (транзитивные `bigint-buffer`, `toml`, `uuid`).
+4. Миграция Next 14 → 15/16 (закрывает оставшиеся DoS-advisories; требует правки `params` в роутах — плановое обновление, не срочное: приложение однопользовательское и за авторизацией).
+5. 2FA на входе (TOTP) — по желанию.

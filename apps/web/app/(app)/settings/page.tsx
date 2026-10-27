@@ -65,6 +65,7 @@ function Section({ icon, title, children }: { icon: React.ReactNode; title: stri
 export default function SettingsPage() {
   const { state } = useEngineState();
   const [form, setForm] = useState<any>(null);
+  const [live, setLive] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [journalDay, setJournalDay] = useState<string>("");
@@ -104,13 +105,45 @@ export default function SettingsPage() {
     if (state?.settings && !form) setForm(state.settings);
   }, [state, form]);
 
+  useEffect(() => {
+    let stop = false;
+    engineGet<any>("/live/status")
+      .then((d) => {
+        if (!stop) setLive(d);
+      })
+      .catch(() => {
+        /* движок может быть ещё не поднят */
+      });
+    return () => {
+      stop = true;
+    };
+  }, []);
+
+  const reconcile = async () => {
+    try {
+      const r = await enginePost<any>("/live/reconcile");
+      if (r?.ok) toast.success("База и цепочка совпадают");
+      else toast.error("Расхождение", { description: (r?.notes ?? []).join("; ") || "смотрите журнал" });
+      setLive(await engineGet<any>("/live/status"));
+    } catch {
+      toast.error("Сверка не удалась");
+    }
+  };
+
   const set = (patch: Record<string, number>) => setForm({ ...form, ...patch });
 
   const save = async () => {
     setSaving(true);
     try {
-      await enginePost("/settings", form);
-      toast.success("Настройки сохранены", { description: "Применятся со следующего скана" });
+      const res = await enginePost<any>("/settings", form);
+      const rejected = (res?.applied?.rejected ?? []) as { key: string; reason: string }[];
+      if (rejected.length) {
+        toast.warning("Часть параметров ограничена", {
+          description: rejected.map((r) => `${r.key}: ${r.reason}`).join(" · "),
+        });
+      } else {
+        toast.success("Настройки сохранены", { description: "Применятся со следующего скана" });
+      }
     } catch {
       toast.error("Не удалось сохранить");
     } finally {
@@ -449,6 +482,96 @@ export default function SettingsPage() {
                   Запустить
                 </Button>
               </div>
+            </Card>
+          </FadeIn>
+
+          <FadeIn delay={0.075}>
+            <Card>
+              <div className="flex items-center gap-2">
+                <ShieldAlert className={`h-4 w-4 ${live?.armed ? "text-mint" : "text-dim"}`} />
+                <div className="text-[13px] font-medium">Боевой режим</div>
+                <Chip tone={live?.armed ? "mint" : "accent"} className="ml-auto">
+                  {live?.armed ? "транзакции включены" : "демо / симуляция"}
+                </Chip>
+              </div>
+
+              <div className="mt-3 space-y-2.5 text-[12px]">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted">Кошелёк</span>
+                  <span className="num truncate text-[11px]">
+                    {live?.wallet ? `${live.wallet.slice(0, 4)}…${live.wallet.slice(-4)}` : "не подключён"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Ключ в .env</span>
+                  <span className={live?.secretPresent ? "text-mint" : "text-danger"}>
+                    {live?.secretPresent ? (live?.secretEncrypted ? "есть · зашифрован" : "есть · base58") : "нет"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Лимиты</span>
+                  <span className="num">
+                    {live?.limits?.maxPositions ?? 3} поз. · {usd(live?.limits?.maxPositionUsd ?? 0, 0)}/поз.
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Слиппедж · резерв газа</span>
+                  <span className="num">
+                    {live?.limits?.slippagePct ?? 0}% · {live?.limits?.minSolReserve ?? 0} SOL
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Алерты в Telegram</span>
+                  <span className={live?.alertsEnabled ? "text-mint" : "text-dim"}>
+                    {live?.alertsEnabled ? "включены" : "не настроены"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Сверка с цепочкой</span>
+                  <span className="num">{live?.positionsWithChainAddress ?? 0} поз. с адресом</span>
+                </div>
+              </div>
+
+              {live?.checks && !live.checks.ok ? (
+                <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.07] p-2.5 text-[11px] leading-relaxed text-amber-200/90">
+                  <div className="mb-1 font-medium">Что блокирует live:</div>
+                  <ul className="list-disc space-y-0.5 pl-4">
+                    {(live.checks.reasons as string[]).map((r) => (
+                      <li key={r}>{r}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {live?.walletError ? (
+                <div className="mt-2 text-[11px] text-danger">{live.walletError}</div>
+              ) : null}
+
+              <div className="mt-3 flex gap-2">
+                <Button variant="ghost" size="sm" className="flex-1" onClick={reconcile} disabled={!live?.armed}>
+                  Сверить с цепочкой
+                </Button>
+              </div>
+
+              {(live?.ops ?? []).length ? (
+                <div className="mt-3 space-y-1 border-t border-white/[0.05] pt-2.5">
+                  <div className="text-[10.5px] uppercase tracking-wide text-dim">последние операции</div>
+                  {(live.ops as any[]).slice(0, 4).map((o) => (
+                    <div key={o.id} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-muted">
+                        {o.kind} #{o.position_id}
+                      </span>
+                      <span
+                        className={
+                          o.status === "confirmed" ? "text-mint" : o.status === "failed" ? "text-danger" : "text-accent2"
+                        }
+                      >
+                        {o.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </Card>
           </FadeIn>
 

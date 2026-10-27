@@ -1,6 +1,9 @@
 import { engine, swapWatcher } from "./engine.js";
 import { startServer } from "./server.js";
 import { journal, rotateJournals } from "./journal.js";
+import * as live from "./executor.js";
+import { alertCritical } from "./alerts.js";
+import { env } from "./env.js";
 
 rotateJournals();
 startServer();
@@ -22,6 +25,35 @@ setInterval(async () => {
 setInterval(() => {
   engine.snapshotEquityNow();
 }, 60_000);
+
+// ── боевой контур: сверка базы с цепочкой.
+// Если позиция «есть в базе, но нет в пуле» (или наоборот) — останавливаемся:
+// управлять фантомом опаснее, чем пропустить сделку.
+const ready = live.readiness();
+if (env.mode === "live" || live.armed()) {
+  if (ready.ok) journal("BOOT", `live-контур готов: кошелёк ${live.walletAddress()}, лимит $${env.live.maxPositionUsd}/позиция`);
+  else journal("WARN", `live-контур не активен: ${ready.reasons.join("; ")}`);
+}
+
+setInterval(async () => {
+  if (!live.armed()) return;
+  try {
+    const r = await live.reconcile();
+    if (!r.ok) {
+      engine.halted = true;
+      engine.haltReason = "расхождение с цепочкой";
+      journal("HALT", `сверка с цепочкой: расхождение`, r);
+      await alertCritical(
+        `Расхождение базы и цепочки: в базе ${r.dbOpen} позиций, в цепочке ${r.chainPositions}.` +
+          (r.missing.length ? `\nНет в цепочке: ${r.missing.join(", ")}` : "") +
+          (r.notes.length ? `\n${r.notes.join("; ")}` : "") +
+          `\nТорговля остановлена.`,
+      );
+    }
+  } catch (err: any) {
+    journal("ERROR", `сверка с цепочкой: ${err?.message ?? err}`);
+  }
+}, Math.max(1, env.live.reconcileMinutes) * 60_000);
 
 async function loop() {
   if (engine.running && !engine.halted) {

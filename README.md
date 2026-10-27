@@ -60,7 +60,8 @@ npm run dev      # движок :8787 + интерфейс :3000
 | PWA (иконка, standalone, офлайн-оболочка) | ✅ |
 | Аналитика с окнами и календарём | ✅ |
 | Свечи: Meteora Data API (основной) + Gecko (fallback) | ✅ кэш по ТФ, дедупликация, предзагрузка |
-| Боевой контур (реальные транзакции) | ⏳ нужен ключ торгового кошелька — см. `docs/05-KEYS-AND-ACCESS.md` |
+| Боевой контур (реальные транзакции) | ✅ код готов: `apps/engine/src/executor.ts` (вход/выход/клейм в DLMM), идемпотентность `onchain_ops`, сверка с цепочкой, kill-switch, алерты в TG. Включается только при `BOT_MODE=live` + `LIVE_EXECUTION=true` + ключе кошелька — см. `docs/12-LIVE-MODE.md` |
+| Безопасность | ✅ Next 14.2.35 (CVE-2025-29927), rate-limit логина, fail-closed AUTH_SECRET, CSP, токен локального API, бэкапы, systemd-hardening — `docs/11-SECURITY-LIVE-AUDIT.md` |
 
 ## Структура
 
@@ -78,5 +79,9 @@ data/           SQLite (node:sqlite)
 `MIN_POOL_AGE_HOURS`, `POSITION_BUDGET_PCT`, `RANGE_ATR_MULT`, `MAX_RANGE_PCT`, `FRICTION_PCT`,
 `MAX_REBALANCES_PER_DAY`, `CONSECUTIVE_LOSS_STOP`, `MAX_HOLD_HOURS`, `PROFIT_TAKE_PCT`,
 `MAX_POSITIONS`, `DIVERSIFY_FROM_USD`, `SCAN_INTERVAL_SECONDS`, `HELIUS_API_KEY`.
+
+Боевой контур: `LIVE_EXECUTION`, `LIVE_MAX_POSITION_USD`, `LIVE_MAX_POSITIONS`, `LIVE_SLIPPAGE_PCT`,
+`LIVE_PRIORITY_FEE_MICROLAMPORTS`, `LIVE_MIN_SOL_RESERVE`, `LIVE_RECONCILE_MINUTES`,
+`TRADING_WALLET_SECRET_BASE58`, `TRADING_WALLET_PUBKEY`, `WALLET_ENCRYPTION_KEY`, `TG_BOT_TOKEN`, `TG_CHAT_ID`; безопасность: `AUTH_SECRET`, `ENGINE_TOKEN`.
 
 Меняются также из интерфейса: **Настройки → Стратегия и риск**.

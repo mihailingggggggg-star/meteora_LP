@@ -37,9 +37,16 @@ async function resolve(mint: string): Promise<string | null> {
   return null;
 }
 
+/** Solana-адрес: base58, 32–44 символа. Всё остальное — не пробрасываем в апстримы. */
+const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
 export async function GET(req: NextRequest) {
-  const mint = req.nextUrl.searchParams.get("mint");
-  if (!mint) return new NextResponse(PLACEHOLDER, { headers: { "content-type": "image/svg+xml" } });
+  const mint = req.nextUrl.searchParams.get("mint") || "";
+  if (!MINT_RE.test(mint)) {
+    return new NextResponse(PLACEHOLDER, {
+      headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=300" },
+    });
+  }
 
   const hit = cache.get(mint);
   if (hit && Date.now() - hit.at < TTL && hit.url) {

@@ -1,5 +1,5 @@
 [Unit]
-Description=Meteora Terminal — веб-интерфейс (Next.js :3000)
+Description=Meteora Terminal — веб-интерфейс (Next.js на 127.0.0.1)
 After=network-online.target meteora-engine.service
 Wants=network-online.target
 
@@ -18,6 +18,26 @@ Restart=always
 RestartSec=3
 StandardOutput=append:/opt/meteora-terminal/.run/web.log
 StandardError=append:/opt/meteora-terminal/.run/web.log
+
+# ── изоляция: вебу нужны только кэш Next и логи
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/opt/meteora-terminal/apps/web/.next /opt/meteora-terminal/.run
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
