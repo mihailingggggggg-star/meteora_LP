@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { ArrowUpRight, ArrowDownRight, ChevronRight, Clock3, RefreshCw, Percent, ShieldAlert } from "lucide-react";
 import { Card, Chip } from "@/components/ui/kit";
 import { TokenIcon } from "@/components/ui/token-icon";
-import { hours, pct, pctPlain, priceSmart, reasonLabel, usd } from "@/lib/format";
+import { hours, meteoraPoolUrl, pct, pctPlain, priceSmart, reasonLabel, usd } from "@/lib/format";
 
 /** Полоса диапазона ±range с текущей ценой внутри. */
 export function RangeBar({ p, height = 34 }: { p: any; height?: number }) {
@@ -87,7 +87,7 @@ export function PositionCard({ p, index = 0, onClose }: { p: any; index?: number
     >
       <Card className="p-4">
         <div className="flex items-start gap-3">
-          <TokenIcon mint={p.tokenMint} symbol={p.tokenSymbol} size={40} rounded={13} />
+          <TokenIcon mint={p.tokenMint} symbol={p.tokenSymbol} size={40} rounded={13} href={meteoraPoolUrl(p.pool)} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <Link href={`/positions/${p.id}`} className="truncate text-[13.5px] font-medium hover:underline">

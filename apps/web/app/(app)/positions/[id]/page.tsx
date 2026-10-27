@@ -23,10 +23,11 @@ import {
 import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Button, Card, Chip, FadeIn, Muted, Segmented, Skeleton, Stat } from "@/components/ui/kit";
 import { TokenIcon } from "@/components/ui/token-icon";
+import { Section } from "@/components/ui/section";
 import { SplitBar } from "@/components/positions/position-card";
 import { PriceChart, type ChartCandle, type ChartLayers } from "@/components/charts/price-chart";
 import { engineGet, enginePost } from "@/lib/api";
-import { dateTime, hours, pct, pctPlain, priceSmart, reasonLabel, reasonTone, usd, usdCompact } from "@/lib/format";
+import { dateTime, hours, meteoraPoolUrl, pct, pctPlain, priceSmart, reasonLabel, reasonTone, usd, usdCompact } from "@/lib/format";
 import { toast } from "sonner";
 
 const TFS = [
@@ -749,6 +750,18 @@ export default function PositionDetail() {
     }
   };
 
+  const primaryActions = isOpen ? (
+    <div className="flex items-center gap-2">
+      <Button variant="mint" size="sm" onClick={claim}>
+        <Sparkles className="h-3.5 w-3.5" /> Собрать комиссии
+      </Button>
+      <Button variant="ghost" size="sm" onClick={close}>
+        Закрыть
+      </Button>
+    </div>
+  ) : null;
+
+
   return (
     <div className="mx-auto max-w-[1500px] space-y-3.5">
       <FadeIn>
@@ -759,7 +772,7 @@ export default function PositionDetail() {
           >
             <ArrowLeft className="h-4 w-4" />
           </Link>
-          <TokenIcon mint={detail.token_mint} symbol={detail.token_symbol} size={40} rounded={13} />
+          <TokenIcon mint={detail.token_mint} symbol={detail.token_symbol} size={40} rounded={13} href={meteoraPoolUrl(detail.pool)} />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-[20px] font-semibold tracking-tight">{detail.pool_name}</h1>
@@ -778,21 +791,46 @@ export default function PositionDetail() {
                   : ""}
             </div>
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            {isOpen && (
-              <>
-                <Button variant="mint" size="sm" onClick={claim}>
-                  <Sparkles className="h-3.5 w-3.5" /> Собрать комиссии
-                </Button>
-                <Button variant="ghost" size="sm" onClick={close}>
-                  Закрыть
-                </Button>
-              </>
-            )}
-          </div>
+          <div className="ml-auto hidden items-center gap-2 lg:flex">{primaryActions}</div>
         </div>
       </FadeIn>
 
+      {/* ── мобильный верх: только главное, крупно ── */}
+      <div className="space-y-2.5 lg:hidden">
+        <Card className="p-4">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-dim">PnL позиции</div>
+          <div
+            className={`num mt-1 text-[36px] font-semibold leading-none ${
+              view.pnl >= 0 ? "text-mint" : "text-danger"
+            }`}
+          >
+            {usd(view.pnl)}
+          </div>
+          <div className="num mt-2 text-[11.5px] text-muted">
+            {pct(view.pnlPct)} депозита · от {usd(view.initialCapital, 0)}
+          </div>
+          <div className="mt-3.5 grid grid-cols-3 gap-2 border-t border-white/[0.05] pt-3">
+            <div>
+              <div className="text-[9px] uppercase tracking-wider text-dim">Цена</div>
+              <div className="num mt-0.5 text-[13px] text-ink">{priceSmart(current)}</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-wider text-dim">Комиссии</div>
+              <div className="num mt-0.5 text-[13px] text-mint">{usd(view.fees)}</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-wider text-dim">Ребалансы</div>
+              <div className="num mt-0.5 text-[13px] text-ink">
+                {live?.rebalances ?? detail.rebalances ?? 0}
+                <span className="text-dim">/{live?.maxRebalances ?? 8}</span>
+              </div>
+            </div>
+          </div>
+        </Card>
+        {primaryActions}
+      </div>
+
+      <Section title="Детали позиции" hint="PnL · комиссии · цена">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <FadeIn delay={0.02}>
           <MetricTile
@@ -841,6 +879,8 @@ export default function PositionDetail() {
         </FadeIn>
       </div>
 
+      </Section>
+
       <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-[minmax(0,1.62fr)_minmax(0,1fr)]">
         <FadeIn delay={0.1}>
           <Card className="p-0">
@@ -871,7 +911,7 @@ export default function PositionDetail() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 px-4 pt-2.5">
+            <div className="hidden flex-wrap items-center gap-1.5 px-4 pt-2.5 lg:flex">
               <LayerToggle
                 active={layers.volume}
                 onClick={() => setLayers((l) => ({ ...l, volume: !l.volume }))}
@@ -918,6 +958,7 @@ export default function PositionDetail() {
           </Card>
         </FadeIn>
 
+        <Section title="Аллокация и результат" hint="SOL / токен · PnL">
         <div className="space-y-3.5">
           <FadeIn delay={0.12}>
             <AllocationCard
@@ -942,8 +983,10 @@ export default function PositionDetail() {
             />
           </FadeIn>
         </div>
+        </Section>
       </div>
 
+      <Section title="Сетка и события" hint="бины · журнал">
       <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <FadeIn delay={0.16}>
           <GridLadder
@@ -1003,9 +1046,13 @@ export default function PositionDetail() {
         </FadeIn>
       </div>
 
+      </Section>
+
+      <Section title="Параметры пула" hint="комиссии · токен">
       <FadeIn delay={0.2}>
         <PoolStatsBlock data={metrics} />
       </FadeIn>
+      </Section>
     </div>
   );
 }

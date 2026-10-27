@@ -8,7 +8,7 @@ import { Card, Chip, Empty, FadeIn, Segmented, Skeleton } from "@/components/ui/
 import { TokenIcon } from "@/components/ui/token-icon";
 import { EmptySlot, PositionCard } from "@/components/positions/position-card";
 import { engineGet, enginePost, useEngineState } from "@/lib/api";
-import { dateTime, hours, pct, pctPlain, priceSmart, reasonLabel, reasonTone, usd } from "@/lib/format";
+import { dateTime, hours, pct, pctPlain, priceSmart, reasonLabel, reasonTone, usd, meteoraPoolUrl } from "@/lib/format";
 import { toast } from "sonner";
 
 type Filter = "open" | "closed" | "all";
@@ -133,7 +133,7 @@ export default function PositionsPage() {
                   >
                     <Link href={`/positions/${p.id}`}>
                       <Card className="group flex flex-wrap items-center gap-4 p-4 transition-colors hover:border-white/[0.12]">
-                        <TokenIcon mint={p.tokenMint} symbol={p.tokenSymbol} size={42} rounded={13} />
+                        <TokenIcon mint={p.tokenMint} symbol={p.tokenSymbol} size={42} rounded={13} href={meteoraPoolUrl(p.pool)} />
                         <div className="min-w-[150px] flex-1">
                           <div className="flex items-center gap-2">
                             <span className="text-[13.5px] font-medium">{p.poolName}</span>

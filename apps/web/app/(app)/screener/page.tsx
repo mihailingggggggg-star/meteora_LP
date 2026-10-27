@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { Button, Card, Chip, FadeIn, Muted, Progress } from "@/components/ui/kit";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { engineGet, enginePost, useEngineState } from "@/lib/api";
-import { pctPlain, time, turnover, usd, usdCompact } from "@/lib/format";
+import { pctPlain, time, turnover, usd, usdCompact, meteoraPoolUrl } from "@/lib/format";
 import { toast } from "sonner";
 
 export default function ScreenerPage() {
@@ -124,7 +124,7 @@ export default function ScreenerPage() {
             >
               <Card className="p-4">
                 <div className="flex flex-wrap items-center gap-4">
-                  <TokenIcon mint={c.tokenMint} symbol={c.tokenSymbol} size={42} rounded={13} />
+                  <TokenIcon mint={c.tokenMint} symbol={c.tokenSymbol} size={42} rounded={13} href={meteoraPoolUrl(c.pool)} />
                   <div className="min-w-[170px] flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[13px] font-medium">{c.poolName}</span>

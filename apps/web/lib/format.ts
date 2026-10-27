@@ -106,3 +106,7 @@ export const reasonTone: Record<string, "mint" | "danger" | "accent" | "neutral"
 /** Оборот пула: суточный объём / TVL — «сколько раз TVL обернулся за сутки». */
 export const turnover = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(v >= 10 ? 0 : 1)}x`;
+
+/** Публичная карточка пула (смартконтракта) в Meteora DLMM. */
+export const meteoraPoolUrl = (pool?: string | null) =>
+  pool ? `https://app.meteora.ag/dlmm/${pool}` : null;
