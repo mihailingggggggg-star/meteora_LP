@@ -16,6 +16,8 @@ type Filter = "open" | "closed" | "all";
 export default function PositionsPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [rows, setRows] = useState<any[] | null>(null);
+  const [period, setPeriod] = useState<"day" | "week" | "month" | "all">("day");
+  const [pnl, setPnl] = useState<any>(null);
   const { state } = useEngineState();
 
   const load = () => {
@@ -38,6 +40,20 @@ export default function PositionsPage() {
     };
   }, [filter]);
 
+  useEffect(() => {
+    let alive = true;
+    const run = () =>
+      engineGet<any>(`/pnl?period=${period}`)
+        .then((d) => alive && setPnl(d))
+        .catch(() => {});
+    run();
+    const t = setInterval(run, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [period]);
+
   const close = async (id: number) => {
     try {
       await enginePost("/bot/close", { id });
@@ -55,6 +71,50 @@ export default function PositionsPage() {
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-5">
+      <FadeIn>
+        <Card className="p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-dim">PnL за период</div>
+              <div
+                className={`num mt-1 text-[28px] font-semibold leading-none ${
+                  (pnl?.pnl ?? 0) >= 0 ? "text-mint" : "text-danger"
+                }`}
+              >
+                {usd(pnl?.pnl ?? 0)}
+              </div>
+              <div className="num mt-1.5 text-[11px] text-muted">
+                {pct(pnl?.pnlPct ?? 0)} к капиталу на начало · сделок {pnl?.trades ?? 0}
+              </div>
+              <div className="num mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px]">
+                <span className="text-dim">
+                  реализовано{" "}
+                  <span className={(pnl?.realized ?? 0) >= 0 ? "text-mint" : "text-danger"}>
+                    {usd(pnl?.realized ?? 0)}
+                  </span>
+                </span>
+                <span className="text-dim">
+                  не реализовано{" "}
+                  <span className={(pnl?.unrealized ?? 0) >= 0 ? "text-mint" : "text-danger"}>
+                    {usd(pnl?.unrealized ?? 0)}
+                  </span>
+                </span>
+              </div>
+            </div>
+            <Segmented
+              value={period}
+              onChange={(v) => setPeriod(v as any)}
+              options={[
+                { value: "day", label: "День" },
+                { value: "week", label: "Неделя" },
+                { value: "month", label: "Месяц" },
+                { value: "all", label: "Всё" },
+              ]}
+            />
+          </div>
+        </Card>
+      </FadeIn>
+
       <FadeIn>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

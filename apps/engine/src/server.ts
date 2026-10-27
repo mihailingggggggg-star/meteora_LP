@@ -252,6 +252,10 @@ export function startServer() {
     try {
       if (p === "/api/health") return json(res, 200, { ok: true, mode: engine.mode, ts: Date.now() });
       if (p === "/api/state") return json(res, 200, engine.state());
+      if (p === "/api/pnl") {
+        const period = (q.get("period") ?? "day") as "day" | "week" | "month" | "all";
+        return json(res, 200, engine.pnlPeriod(["day", "week", "month", "all"].includes(period) ? period : "day"));
+      }
       if (p === "/api/candidates") {
         if (engine.candidates.length) {
           return json(res, 200, { candidates: engine.candidates, lastScanAt: engine.lastScanAt, scanning: engine.scanning });

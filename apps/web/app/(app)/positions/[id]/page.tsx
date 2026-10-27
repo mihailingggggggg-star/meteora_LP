@@ -649,6 +649,9 @@ export default function PositionDetail() {
     const fees = (live?.feesAccrued ?? detail.fees_usd ?? 0) + (detail.claimed_usd ?? 0);
     const pnl = live ? live.pnl : (detail.pnl_usd ?? 0);
     const pnlPct = live ? live.pnlPctOfDeposit : (detail.pnl_pct ?? 0);
+    // для открытой позиции движок отдаёт разложение; у закрытой всё уже реализовано
+    const realizedPnl = live ? (live.realizedPnl ?? 0) : (detail.pnl_usd ?? 0);
+    const unrealizedPnl = live ? (live.unrealizedPnl ?? 0) : 0;
     const solUsd = live?.solUsd ?? detail.allocation?.at?.(-1)?.sol ?? capital / 2;
     const tokenUsd = live?.tokenUsd ?? detail.allocation?.at?.(-1)?.token ?? capital / 2;
     const body = live ? live.bodyPnl : (detail.il_usd ?? 0);
@@ -666,6 +669,8 @@ export default function PositionDetail() {
       rangePct,
       pnl,
       pnlPct,
+      realizedPnl,
+      unrealizedPnl,
       fees,
       solUsd,
       tokenUsd,
@@ -809,6 +814,20 @@ export default function PositionDetail() {
           <div className="num mt-2 text-[11.5px] text-muted">
             {pct(view.pnlPct)} депозита · от {usd(view.initialCapital, 0)}
           </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-white/[0.05] bg-white/[0.02] p-2.5">
+            <div>
+              <div className="text-[9px] uppercase tracking-wider text-dim">Реализовано</div>
+              <div className={`num mt-0.5 text-[13px] ${view.realizedPnl >= 0 ? "text-mint" : "text-danger"}`}>
+                {usd(view.realizedPnl)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-wider text-dim">Не реализовано</div>
+              <div className={`num mt-0.5 text-[13px] ${view.unrealizedPnl >= 0 ? "text-mint" : "text-danger"}`}>
+                {usd(view.unrealizedPnl)}
+              </div>
+            </div>
+          </div>
           <div className="mt-3.5 grid grid-cols-3 gap-2 border-t border-white/[0.05] pt-3">
             <div>
               <div className="text-[9px] uppercase tracking-wider text-dim">Цена</div>
@@ -836,7 +855,13 @@ export default function PositionDetail() {
           <MetricTile
             label="PnL позиции"
             value={<span className={view.pnl >= 0 ? "text-mint" : "text-danger"}>{usd(view.pnl)}</span>}
-            sub={`${pct(view.pnlPct)} депозита · от ${usd(view.initialCapital, 0)}`}
+            sub={
+              <>
+                {pct(view.pnlPct)} депозита · реал. {usd(view.realizedPnl)}
+                <br />
+                не реализовано {usd(view.unrealizedPnl)} · от {usd(view.initialCapital, 0)}
+              </>
+            }
             icon={view.pnl >= 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
           />
         </FadeIn>

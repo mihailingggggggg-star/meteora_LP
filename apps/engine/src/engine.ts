@@ -1269,7 +1269,9 @@ export class Engine {
       proceeds = fairUsd - tokenUsd * slipPct;
     }
 
-    const pnl = proceeds + pos.feesAccrued - pos.capital;
+    // снятые комиссии уже лежат в кассе, но результат сделки они тоже формируют;
+    // просадка базы от ребалансов (initialCapital − capital) учтена через initialCapital
+    const pnl = proceeds + pos.feesAccrued + pos.feesClaimed - pos.initialCapital;
     const pnlPct = (pnl / this.deposit) * 100;
     this.cash += proceeds + pos.feesAccrued;
 
@@ -1340,6 +1342,63 @@ export class Engine {
   totalFees(): number {
     const row = db.prepare(`SELECT COALESCE(SUM(fees_usd),0) AS f FROM positions WHERE mode = ?`).get(this.mode) as any;
     return Number(row?.f ?? 0);
+  }
+
+  /** PnL за период = изменение капитала с начала периода (а не сумма сделок). */
+  pnlPeriod(period: "day" | "week" | "month" | "all" = "day") {
+    const now = Date.now();
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const from =
+      period === "day"
+        ? dayStart.getTime()
+        : period === "week"
+          ? now - 7 * 86_400_000
+          : period === "month"
+            ? now - 30 * 86_400_000
+            : 0;
+
+    const first = db
+      .prepare(`SELECT equity FROM equity WHERE mode=? ORDER BY ts ASC LIMIT 1`)
+      .get(this.mode) as any;
+    const before = db
+      .prepare(`SELECT equity FROM equity WHERE mode=? AND ts<=? ORDER BY ts DESC LIMIT 1`)
+      .get(this.mode, from) as any;
+
+    const equityNow = this.getEquity().equity;
+    const equityStart = Number(before?.equity ?? first?.equity ?? this.deposit);
+
+    const series = db
+      .prepare(`SELECT ts, equity FROM equity WHERE mode=? AND ts>=? ORDER BY ts`)
+      .all(this.mode, from) as any[];
+
+    const closed = db
+      .prepare(
+        `SELECT COALESCE(SUM(pnl_usd),0) AS pnl, COUNT(*) AS n FROM positions WHERE mode=? AND status='closed' AND closed_at>=?`,
+      )
+      .get(this.mode, from) as any;
+
+    const unrealized = this.positions.reduce((sum, p) => {
+      const rel = p.lastPrice / p.entryPrice;
+      const val = positionValue(p.bins, rel);
+      return sum + (val.value + p.feesAccrued + p.feesClaimed - p.initialCapital);
+    }, 0);
+    const realized = Number(closed?.pnl ?? 0);
+
+    const pnl = equityNow - equityStart;
+    return {
+      period,
+      from,
+      to: now,
+      equityNow,
+      equityStart,
+      pnl,
+      pnlPct: equityStart > 0 ? (pnl / equityStart) * 100 : 0,
+      realized,
+      unrealized,
+      trades: Number(closed?.n ?? 0),
+      series: series.map((r) => ({ ts: r.ts, equity: r.equity })),
+    };
   }
 
   snapshotEquityNow() {
@@ -1419,9 +1478,18 @@ export class Engine {
       initialCapital: p.initialCapital,
       frictionPaid: p.frictionPaid,
       bodyPnl: val.value - p.capital,
-      pnl: val.value + p.feesAccrued - p.initialCapital,
-      pnlPctOfDeposit: ((val.value + p.feesAccrued - p.initialCapital) / this.deposit) * 100,
-      pnlPctDeposit: ((val.value + p.feesAccrued - p.initialCapital) / this.deposit) * 100,
+      // Итого = всё, что позиция дала сверх вложенного: тело + комиссии (в кассе и начисленные)
+      // реализовано = уже снятые комиссии минус просадка базы от ребалансов (friction)
+      // не реализовано = текущая стоимость тела + начисленные комиссии минус текущая база
+      realizedPnl: p.feesClaimed - (p.initialCapital - p.capital),
+      unrealizedPnl: val.value + p.feesAccrued - p.capital,
+      pnl: val.value + p.feesAccrued + p.feesClaimed - p.initialCapital,
+      pnlPctOfDeposit: ((val.value + p.feesAccrued + p.feesClaimed - p.initialCapital) / this.deposit) * 100,
+      pnlPctDeposit: ((val.value + p.feesAccrued + p.feesClaimed - p.initialCapital) / this.deposit) * 100,
+      pnlPctOfCapital:
+        p.initialCapital > 0
+          ? ((val.value + p.feesAccrued + p.feesClaimed - p.initialCapital) / p.initialCapital) * 100
+          : 0,
       timeInTradeHours: (Date.now() - p.openedAt) / 3600_000,
       inRange: rel <= 1 + p.rangePct && rel >= 1 - p.rangePct,
       distanceToUpperPct: ((1 + p.rangePct) / rel - 1) * 100,
@@ -1439,8 +1507,11 @@ export class Engine {
       .get(this.mode, today.getTime()) as any;
     const openPnl = this.positions.reduce((s, p) => {
       const rel = p.lastPrice / p.entryPrice;
-      return s + positionValue(p.bins, rel).value + p.feesAccrued - p.initialCapital;
+      return s + positionValue(p.bins, rel).value + p.feesAccrued + p.feesClaimed - p.initialCapital;
     }, 0);
+    const dayPnl = this.pnlPeriod("day");
+    const weekPnl = this.pnlPeriod("week");
+    const monthPnl = this.pnlPeriod("month");
     return {
       mode: this.mode,
       running: this.running,
@@ -1453,7 +1524,12 @@ export class Engine {
       inPositions: eq.inPositions,
       pendingFees: eq.pendingFees,
       totalFees: this.totalFees(),
-      pnlToday: Number(row?.pnl ?? 0) + openPnl,
+      pnlToday: dayPnl.pnl,
+      pnlTodayPct: dayPnl.pnlPct,
+      pnlWeek: weekPnl.pnl,
+      pnlWeekPct: weekPnl.pnlPct,
+      pnlMonth: monthPnl.pnl,
+      pnlMonthPct: monthPnl.pnlPct,
       realizedToday: Number(row?.pnl ?? 0),
       unrealized: openPnl,
       tradesToday: Number(row?.n ?? 0),
