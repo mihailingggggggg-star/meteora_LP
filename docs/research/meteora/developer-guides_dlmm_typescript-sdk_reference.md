@@ -1,0 +1,767 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.meteora.ag/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# DLMM TS SDK Reference
+
+> Understand @meteora-ag/dlmm exports, client methods, pool creation, positions, liquidity, swaps, fees, rewards, and helpers.
+
+This page is based on the public `ts-client` source for `@meteora-ag/dlmm`. The package exports the `DLMM` class as its default export, plus helper modules, constants, IDL types, account filters, and low-level wrappers.
+
+```typescript theme={"system"}
+import DLMM, {
+  ActivationType,
+  CollectFeeMode,
+  ConcreteFunctionType,
+  PairType,
+  ResizeSide,
+  StrategyType,
+  deriveBinArray,
+  getBinArrayIndexesCoverage,
+} from "@meteora-ag/dlmm"
+```
+
+## Dependencies
+
+Important runtime dependencies:
+
+| Package | Use |
+| - | - |
+| `@coral-xyz/anchor` | Program client, BN, IDL-derived types. |
+| `@solana/web3.js` | Connections, transactions, instructions, public keys. |
+| `@solana/spl-token` | ATA creation, Token and Token-2022 account handling, transfer fee and transfer hook data. |
+| `decimal.js` | Price, fee, and UI conversion arithmetic. |
+
+## Program IDs
+
+```typescript theme={"system"}
+LBCLMM_PROGRAM_IDS = {
+  devnet: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  localhost: "LbVRzDTvBDEcrthxfZ4RL6yiq3uZw8bS6MwtdY6UhFQ",
+  "mainnet-beta": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+}
+```
+
+`localhost` is an SDK constant for local test harnesses.
+
+Pass `opt` to most static methods and `DLMM.create` when you need a non-default cluster or program ID:
+
+```typescript theme={"system"}
+type Opt = {
+  cluster?: Cluster | "localhost"
+  programId?: PublicKey
+  skipSolWrappingOperation?: boolean
+}
+```
+
+`skipSolWrappingOperation` is useful when another integration, such as a zap flow, manages wrapped SOL accounts itself.
+
+## Core Types
+
+| Type | Description |
+| - | - |
+| `ClmmProgram` | Anchor `Program&lt;LbClmm&gt;`. |
+| `LbPair`, `LbPairAccount` | Pool account state and Anchor account wrapper. |
+| `Bin`, `BinArray`, `BinArrayAccount` | Bin and bin array state. |
+| `BinArrayBitmapExtensionAccount` | Bitmap extension account wrapper. |
+| `PositionV2`, `LbPosition`, `PositionInfo`, `PositionData` | Position account and SDK-normalized position data. |
+| `LimitOrder`, `ParsedLimitOrderWithPubkey` | Limit order account and parsed SDK view. |
+| `TokenReserve` | Mint, reserve, raw balance, token program owner, and transfer-hook metas. |
+| `SwapQuote`, `SwapQuoteExactOut` | Exact-in and exact-out quote result types. |
+| `FeeInfo`, `EmissionRate` | Current pool fee and reward emission views. |
+| `StrategyParameters` | Position/liquidity strategy input. |
+
+```typescript theme={"system"}
+interface StrategyParameters {
+  maxBinId: number
+  minBinId: number
+  strategyType: StrategyType
+  singleSidedX?: boolean
+}
+```
+
+## Enums
+
+| Enum | Values |
+| - | - |
+| `StrategyType` | `Spot`, `Curve`, `BidAsk` |
+| `ActivationType` | `Slot`, `Timestamp` |
+| `PairType` | `Permissionless`, `Permissioned`, `CustomizablePermissionless`, `PermissionlessV2` |
+| `PairStatus` | `Enabled`, `Disabled` |
+| `FunctionType` | `Undetermined`, `LiquidityMining`, `LimitOrder` |
+| `ConcreteFunctionType` | `LimitOrder`, `LiquidityMining` |
+| `CollectFeeMode` | `InputOnly`, `OnlyY` |
+| `PositionVersion` | `V1`, `V2` |
+| `ShrinkMode` | `ShrinkBoth`, `NoShrinkLeft`, `NoShrinkRight`, `NoShrinkBoth` |
+| `ResizeSide` | `Lower`, `Upper` |
+| `ActionType` | `Liquidity`, `Reward` |
+
+## Important Constants
+
+| Constant | Meaning |
+| - | - |
+| `BASIS_POINT_MAX` | `10000`. Used for bps calculations. |
+| `FEE_PRECISION` | Program fee precision. |
+| `MAX_FEE_RATE` | Maximum fee rate in program precision. |
+| `BIN_ARRAY_DEFAULT_VERSION` | Current bin array layout version. |
+| `MAX_BINS_PER_POSITION` / `POSITION_MAX_LENGTH` | Maximum dynamic position width. |
+| `MAX_RESIZE_LENGTH` | Maximum position resize increment per instruction. |
+| `DEFAULT_BIN_PER_POSITION` | Base position width before dynamic extension data. |
+| `MAX_BIN_LENGTH_ALLOWED_IN_ONE_TX` | Threshold used by legacy weight flows before splitting transactions. |
+| `MAX_EXTRA_BIN_ARRAYS` | Maximum extra bin arrays quote helpers may include. |
+| `MAX_BIN_PER_LIMIT_ORDER` | Maximum bins allowed in one limit order account. |
+| `LIMIT_ORDER_FEE_SHARE` | Program constant for limit order fee share. |
+| `MAX_CLAIM_ALL_ALLOWED` | Claim-all transaction chunk size. |
+
+The SDK also exports approximate rent constants such as `BIN_ARRAY_FEE`, `POSITION_FEE`, `POOL_FEE`, `TOKEN_ACCOUNT_FEE`, and `BIN_ARRAY_BITMAP_FEE`, plus BN versions of those amounts.
+
+## Creating A Client
+
+### `DLMM.create`
+
+```typescript theme={"system"}
+static create(
+  connection: Connection,
+  dlmm: PublicKey,
+  opt?: Opt,
+): Promise<DLMM>
+```
+
+Creates one hydrated `DLMM` pool client. It fetches:
+
+* `LbPair`
+* `BinArrayBitmapExtension`, if initialized
+* `SYSVAR_CLOCK`
+* reserve token accounts
+* token X/Y mint accounts
+* reward vaults and reward mint accounts
+* Token-2022 transfer-hook extra account metas for pool and reward mints
+
+```typescript theme={"system"}
+const pool = await DLMM.create(connection, poolAddress, {
+  cluster: "mainnet-beta",
+})
+```
+
+### `DLMM.createMultiple`
+
+```typescript theme={"system"}
+static createMultiple(
+  connection: Connection,
+  dlmmList: PublicKey[],
+  opt?: Opt,
+): Promise<DLMM[]>
+```
+
+Batch version of `create`. Prefer this for dashboards, portfolio pages, routing, or any flow loading multiple pools. It batches pool, reserve, mint, reward, bitmap, and transfer-hook reads.
+
+## Static Discovery Methods
+
+| Method | Signature | Description | |
+| - | - | - | - |
+| `getLbPairs` | `(connection, opt?) =&gt; Promise&lt;LbPairAccount[]&gt;` | Fetches all `LbPair` accounts from the configured program. Requires RPC support for `getProgramAccounts`. | |
+| `getPairPubkeyIfExists` | \`(connection, tokenX, tokenY, binStep, baseFactor, baseFeePowerFactor, concreteFunctionType?, collectFeeMode?, opt?) => Promise\<PublicKey | null>\` | Checks v2 PDA, legacy PDA, and `PresetParameter2`-derived candidate pool addresses. |
+| `getCustomizablePermissionlessLbPairIfExists` | \`(connection, tokenX, tokenY, opt?) => Promise\<PublicKey | null>\` | Checks the customizable permissionless pool PDA for a token pair. |
+| `getAllPresetParameters` | `(connection, opt?) =&gt; Promise&lt;{ presetParameter; presetParameter2 }&gt;` | Fetches legacy and v2 preset parameter accounts. | |
+| `getAllLbPairPositionsByUser` | `(connection, userPubKey, opt?, getPositionsOpt?) =&gt; Promise&lt;Map&lt;string, PositionInfo&gt;&gt;` | Fetches every `PositionV2` owned by a user, groups by pool, loads bin arrays and pool accounts, and returns processed position data. | |
+| `getPricePerLamport` | `(baseTokenDecimal, quoteTokenDecimal, price) =&gt; string` | Converts UI price to price-per-lamport. | |
+| `getBinIdFromPrice` | `(price, binStep, min) =&gt; number` | Converts price to bin ID. `min` controls rounding side. | |
+| `calculateFeeInfo` | `(baseFactor, binStep, protocolShare, baseFeePowerFactor?) =&gt; FeeInfo` | Computes base/max/protocol fee percentages from fee parameters. | |
+| `updateVolatilityAccumulator` | `(vParameter, sParameter, activeId) =&gt; void` | In-memory helper used by quote simulation. | |
+| `updateReference` | `(activeId, vParameter, sParameter, currentTimestamp) =&gt; void` | In-memory helper used by quote simulation. | |
+
+`getPositionsOpt` supports chunked position loading:
+
+```typescript theme={"system"}
+type GetPositionsOpt = {
+  chunkSize?: number
+  onChunkFetched?: ChunkCallback
+  isParallelExecution?: boolean
+}
+```
+
+## Pool Creation Methods
+
+Creation helpers return unsigned `Transaction` objects. The caller still signs and sends.
+
+| Method | Underlying instruction | Token support | Notes |
+| - | - | - | - |
+| `createLbPair` | `initialize_lb_pair` | SPL Token only | Legacy permissionless creation. Requires `binStep`, `baseFactor`, and legacy `presetParameter`. |
+| `createLbPair2` | `initialize_lb_pair2` | SPL Token and Token-2022 | Current permissionless path. Reads `PresetParameter2`, token badges, token program IDs, and derives pool PDA from preset parameter. |
+| `createCustomizablePermissionlessLbPair` | `initialize_customizable_permissionless_lb_pair` | SPL Token only | Creator-configurable pool. Throws if computed base fee power factor overflows legacy path. |
+| `createCustomizablePermissionlessLbPair2` | `initialize_customizable_permissionless_lb_pair2` | SPL Token and Token-2022 | Current customizable path. Supports `ConcreteFunctionType` and `CollectFeeMode`. |
+
+### `createLbPair2`
+
+```typescript theme={"system"}
+static createLbPair2(
+  connection: Connection,
+  funder: PublicKey,
+  tokenX: PublicKey,
+  tokenY: PublicKey,
+  presetParameter: PublicKey,
+  activeId: BN,
+  opt?: Opt,
+): Promise<Transaction>
+```
+
+Use this for new permissionless pools when you already know the `PresetParameter2` account.
+
+### `createCustomizablePermissionlessLbPair2`
+
+```typescript theme={"system"}
+static createCustomizablePermissionlessLbPair2(
+  connection: Connection,
+  binStep: BN,
+  tokenX: PublicKey,
+  tokenY: PublicKey,
+  activeId: BN,
+  feeBps: BN,
+  activationType: ActivationType,
+  hasAlphaVault: boolean,
+  creatorKey: PublicKey,
+  activationPoint?: BN,
+  creatorPoolOnOffControl?: boolean,
+  concreteFunctionType?: ConcreteFunctionType,
+  collectFeeMode?: CollectFeeMode,
+  opt?: Opt,
+): Promise<Transaction>
+```
+
+Defaults:
+
+* `concreteFunctionType`: `ConcreteFunctionType.LimitOrder`
+* `collectFeeMode`: `CollectFeeMode.InputOnly`
+* `creatorPoolOnOffControl`: `false`
+
+When either token is native SOL and `skipSolWrappingOperation` is not set, the SDK adds temporary wrap and unwrap instructions.
+
+## Instance State
+
+Each `DLMM` instance exposes these public fields:
+
+| Field | Type | Description | |
+| - | - | - | - |
+| `pubkey` | `PublicKey` | Pool address. | |
+| `program` | `ClmmProgram` | Anchor program client. | |
+| `lbPair` | `LbPair` | Current pool account state. | |
+| `binArrayBitmapExtension` | \`BinArrayBitmapExtensionAccount | null\` | Bitmap extension account if present. |
+| `tokenX`, `tokenY` | `TokenReserve` | Pool token mint/reserve metadata. | |
+| `rewards` | \`(TokenReserve | null)\[]\` | Up to two reward token reserves. |
+| `clock` | `Clock` | Clock state loaded when the client was created/refetched. | |
+
+Call `refetchStates()` after sending transactions if you need the client to reflect current pool state.
+
+## Reading Pool State
+
+| Method | Signature | Description |
+| - | - | - |
+| `refetchStates` | `() =&gt; Promise&lt;void&gt;` | Reloads pool, bitmap, reserves, rewards, token mints, transfer hooks, and clock. |
+| `getLbPairLockInfo` | `(lockDurationOpt?, getPositionsOpt?) =&gt; Promise&lt;PairLockInfo&gt;` | Finds positions whose `lockReleasePoint` is greater than the current slot/timestamp plus optional duration. |
+| `getBinArrays` | `() =&gt; Promise&lt;BinArrayAccount[]&gt;` | Fetches initialized bin arrays tracked by pool bitmap and bitmap extension. |
+| `getBinArrayForSwap` | `(swapForY, count?) =&gt; Promise&lt;BinArrayAccount[]&gt;` | Fetches bin arrays from the active bin in the swap direction. |
+| `getBinsAroundActiveBin` | `(numberOfBinsToTheLeft, numberOfBinsToTheRight) =&gt; Promise&lt;{ activeBin; bins }&gt;` | Reads a window of bins around `activeId`. |
+| `getBinsBetweenMinAndMaxPrice` | `(minPrice, maxPrice) =&gt; Promise&lt;BinLiquidity[]&gt;` | Reads bins in a UI price range. |
+| `getBinsBetweenLowerAndUpperBound` | `(lowerBinId, upperBinId) =&gt; Promise&lt;BinLiquidity[]&gt;` | Reads bins in an absolute bin range. |
+| `getActiveBin` | `() =&gt; Promise&lt;BinLiquidity&gt;` | Returns processed active-bin liquidity. |
+| `getFeeInfo` | `() =&gt; FeeInfo` | Returns base, max, and protocol fee percentages. |
+| `getDynamicFee` | `() =&gt; Decimal` | Returns current variable fee percentage. |
+| `getEmissionRate` | `() =&gt; EmissionRate` | Returns reward emissions for reward slots. |
+| `getOracle` | `() =&gt; Promise&lt;IDynamicOracle&gt;` | Wraps the oracle account for observation and TWAP reads. |
+| `increaseOracleLength` | `(lengthToAdd, funder) =&gt; Promise&lt;Transaction&gt;` | Builds a transaction to increase oracle account length. |
+
+## Price Helpers
+
+| Method | Description |
+| - | - |
+| `toPricePerLamport(price)` | Converts UI token price using the pool token decimals. |
+| `fromPricePerLamport(pricePerLamport)` | Converts price-per-lamport into UI token price. |
+| `getBinIdFromPrice(price, min)` | Pool-aware bin ID conversion using the pool `binStep`. |
+| `getMaxPriceInBinArrays(binArrayAccounts)` | Finds the max price with token X liquidity in a set of bin arrays. |
+
+Example:
+
+```typescript theme={"system"}
+const activeBin = await pool.getActiveBin()
+const price = pool.fromPricePerLamport(Number(activeBin.price))
+const binId = pool.getBinIdFromPrice(Number(price), true)
+```
+
+## Positions
+
+### Querying Positions
+
+| Method | Signature | Description |
+| - | - | - |
+| `getPosition` | `(positionPubKey) =&gt; Promise&lt;LbPosition&gt;` | Fetches one position, loads covered bin arrays, and returns processed balances, fees, rewards, and per-bin data. |
+| `getPositionsByUserAndLbPair` | `(userPubKey?, getPositionsOpt?) =&gt; Promise&lt;{ activeBin; userPositions }&gt;` | Fetches user positions for this pool. If no user is provided, returns only `activeBin` and an empty array. |
+| `DLMM.getAllLbPairPositionsByUser` | Static | Fetches positions across all pools and returns a map keyed by pool address. |
+
+`PositionData` includes:
+
+* total token X/Y amounts
+* per-bin position data
+* fees and rewards
+* transfer-fee-excluded amounts
+* owner and fee owner
+* claimed fee/reward totals
+
+### Creating Positions
+
+| Method | Signature | Description |
+| - | - | - |
+| `createEmptyPosition` | `({ positionPubKey, minBinId, maxBinId, user }) =&gt; Promise&lt;Transaction&gt;` | Initializes a legacy-width position and needed bin arrays. |
+| `createExtendedEmptyPosition` | `(lowerBinId, upperBinId, position, owner) =&gt; Promise&lt;Transaction&gt;` | Creates a position and adds extension instructions for wide ranges. |
+| `initializePositionByOperator` | `({ lowerBinId, positionWidth, owner, feeOwner, base, operator, payer, lockReleasePoint }) =&gt; Promise&lt;Transaction&gt;` | Creates an operator-managed PDA position with fee owner and lock release point. |
+| `quoteCreatePosition` | `({ strategy }) =&gt; Promise&lt;QuoteCreatePositionResult&gt;` | Estimates position count, position rent, realloc cost, bitmap extension cost, bin array count, and transaction count. |
+| `quoteExtendPosition` | `(currentMinBinId, currentMaxBinId, binCountToExpand) =&gt; Promise&lt;{ positionExtendCost; binArrayCost }&gt;` | Estimates rent and bin array costs for extension. |
+
+### Resizing And Closing Positions
+
+| Method | Description |
+| - | - |
+| `increasePositionLength(position, side, length, funder, allowParallelExecution?)` | Builds one or more transactions to extend lower or upper side. The final width is capped at `POSITION_MAX_LENGTH`. |
+| `decreasePositionLength(position, side, length, allowParallelExecution?)` | Builds one or more transactions to shrink an empty lower or upper segment. The position keeps at least one bin. |
+| `closePosition({ owner, position })` | Closes a position with `closePosition2`. |
+| `closePositionIfEmpty({ owner, position })` | Closes only when empty; otherwise the program no-ops/fails according to program rules. |
+| `enablePositionPermissionlessClaimFee({ position, owner })` | Sets the position permission bit for permissionless fee claiming. |
+
+## Liquidity
+
+### Strategy-Based Liquidity
+
+| Method | Return | Description |
+| - | - | - |
+| `initializePositionAndAddLiquidityByStrategy(params)` | `Promise&lt;Transaction&gt;` | Initializes a position, initializes needed bin arrays, creates ATAs, handles SOL wrapping, and calls `addLiquidityByStrategy2`. |
+| `initializeMultiplePositionAndAddLiquidityByStrategy(...)` | `Promise&lt;InitializeMultiplePositionAndAddLiquidityByStrategyResponse&gt;` | Splits a range across multiple base-width positions and returns grouped instructions. |
+| `initializeMultiplePositionAndAddLiquidityByStrategy2(...)` | `Promise&lt;InitializeMultiplePositionAndAddLiquidityByStrategyResponse2&gt;` | Current multi-position path. Supports extended positions, optional ALT, and chunked transaction instruction groups. |
+| `addLiquidityByStrategy(params)` | `Promise&lt;Transaction&gt;` | Adds liquidity to an existing position using `addLiquidityByStrategy2`. |
+| `addLiquidityByStrategyChunkable(params)` | `Promise&lt;Transaction[]&gt;` | Adds strategy liquidity with chunked transaction output. Can auto-expand through rebalance endpoint. |
+
+`params` for single-position strategy flows:
+
+```typescript theme={"system"}
+type TInitializePositionAndAddLiquidityParamsByStrategy = {
+  positionPubKey: PublicKey
+  totalXAmount: BN
+  totalYAmount: BN
+  strategy: StrategyParameters
+  user: PublicKey
+  slippage?: number
+}
+```
+
+### Weight-Based Liquidity
+
+| Method | Return | Description | |
+| - | - | - | - |
+| `initializePositionAndAddLiquidityByWeight(params)` | \`Promise\<Transaction | Transaction\[]>\` | Deprecated legacy path. Initializes a position and deposits explicit bin weights. |
+| `addLiquidityByWeight(params)` | \`Promise\<Transaction | Transaction\[]>\` | Legacy explicit-weight deposit path. |
+| `addLiquidityByWeight2(params, binPerChunk?)` | `Promise&lt;Transaction[]&gt;` | Current chunked weight deposit path for existing positions. Validates the deposit range is inside the position range. | |
+
+Weight params:
+
+```typescript theme={"system"}
+type TInitializePositionAndAddLiquidityParams = {
+  positionPubKey: PublicKey
+  totalXAmount: BN
+  totalYAmount: BN
+  xYAmountDistribution: BinAndAmount[]
+  user: PublicKey
+  slippage?: number
+}
+```
+
+### Removing Liquidity
+
+```typescript theme={"system"}
+removeLiquidity({
+  user,
+  position,
+  fromBinId,
+  toBinId,
+  bps,
+  shouldClaimAndClose = false,
+  skipUnwrapSOL = false,
+}): Promise<Transaction[]>
+```
+
+The SDK:
+
+* trims requested range to bins with liquidity, fees, or rewards
+* creates owner and fee-owner ATAs
+* optionally claims fees and rewards
+* optionally closes the position if empty
+* chunks by bin range
+* uses `removeLiquidityByRange2`
+
+## Swaps
+
+### Quote Methods
+
+| Method | Signature | Description |
+| - | - | - |
+| `swapQuote` | `(inAmount, swapForY, allowedSlippage, binArrays, isPartialFill?, maxExtraBinArrays?) =&gt; SwapQuote` | Exact-in quote. `swapForY = true` means token X to token Y. Slippage is bps. |
+| `swapQuoteExactOut` | `(outAmount, swapForY, allowedSlippage, binArrays, maxExtraBinArrays?) =&gt; SwapQuoteExactOut` | Exact-out quote. Returns max input amount after slippage. |
+
+Quote result fields:
+
+| Field | Exact in | Exact out | Description |
+| - | - | - | - |
+| `consumedInAmount` | Yes | No | Input amount actually consumed, transfer-fee included. |
+| `inAmount` | No | Yes | Required input amount. |
+| `outAmount` | Yes | Yes | Output amount, transfer-fee adjusted where applicable. |
+| `fee` | Yes | Yes | Swap fee amount. |
+| `protocolFee` | Yes | Yes | Protocol fee amount. |
+| `minOutAmount` | Yes | No | Minimum output after slippage. |
+| `maxInAmount` | No | Yes | Maximum input after slippage. |
+| `priceImpact` | Yes | Yes | Price impact as `Decimal`. |
+| `binArraysPubkey` | Yes | Yes | Bin arrays to pass into swap transaction builder. |
+| `endPrice` | Yes | No | End bin price after simulated exact-in swap. |
+| `feeOnInput` | Yes | No | Whether fees are collected on input for this direction. |
+
+### Transaction Builders
+
+| Method | Instruction | Description |
+| - | - | - |
+| `swap(params)` | `swap2` | Exact-in swap transaction. |
+| `swapExactOut(params)` | `swap_exact_out2` | Exact-out swap transaction. Uses a fixed `1_400_000` CU limit. |
+| `swapWithPriceImpact(params)` | `swap_with_price_impact2` | Exact-in style swap with price-impact bps guard. |
+
+```typescript theme={"system"}
+const binArrays = await pool.getBinArrayForSwap(true)
+const quote = pool.swapQuote(new BN(1_000_000), true, new BN(50), binArrays)
+
+const tx = await pool.swap({
+  inToken: pool.tokenX.publicKey,
+  outToken: pool.tokenY.publicKey,
+  inAmount: quote.consumedInAmount,
+  minOutAmount: quote.minOutAmount,
+  lbPair: pool.pubkey,
+  user: wallet.publicKey,
+  binArraysPubkey: quote.binArraysPubkey,
+})
+```
+
+The swap builders create missing ATAs, handle wrapped SOL unless disabled, add Token-2022 transfer-hook remaining accounts, and pass bin arrays as remaining writable accounts.
+
+## Fees And Rewards
+
+| Method | Return | Description |
+| - | - | - |
+| `claimSwapFee({ owner, position })` | `Promise&lt;Transaction[]&gt;` | Claims swap fees for one position. Throws if there are no fees. |
+| `claimAllSwapFee({ owner, positions })` | `Promise&lt;Transaction[]&gt;` | Claims swap fees for multiple positions. Chunks by `MAX_CLAIM_ALL_ALLOWED`. |
+| `claimLMReward({ owner, position })` | `Promise&lt;Transaction[]&gt;` | Claims liquidity mining rewards for one position. Throws if no rewards. |
+| `claimAllLMRewards({ owner, positions })` | `Promise&lt;Transaction[]&gt;` | Claims LM rewards for multiple positions. |
+| `claimAllRewardsByPosition({ owner, position })` | `Promise&lt;Transaction[]&gt;` | Claims fees and rewards for a single position. |
+| `claimAllRewards({ owner, positions })` | `Promise&lt;Transaction[]&gt;` | Claims fees and rewards across multiple positions. |
+
+The claim builders create token accounts as needed and use Token-2022 transfer-hook remaining accounts for pool tokens and reward tokens.
+
+## Limit Orders
+
+Limit order methods are available for pools that support limit orders.
+
+### Query Methods
+
+| Method | Return | Description | |
+| - | - | - | - |
+| `getLimitOrder(limitOrder)` | \`Promise\<ParsedLimitOrderWithPubkey | null>\` | Fetches and parses one limit order account. |
+| `getLimitOrderByUserAndLbPair(user)` | `Promise&lt;ParsedLimitOrderWithPubkey[]&gt;` | Fetches parsed limit orders for the user and current pool. | |
+| `quoteCreateLimitOrder({ bins, relativeBin? })` | Cost quote | Estimates limit order rent, uninitialized bin arrays, bitmap extension cost. | |
+
+`relativeBin` treats each `bin.id` as an offset from current `activeId`.
+
+### Transaction Builders
+
+| Method | Description |
+| - | - |
+| `placeLimitOrder({ owner, payer, sender, limitOrder, params })` | Creates bin arrays if needed, optionally initializes bitmap extension, wraps SOL if needed, and calls `place_limit_order`. |
+| `cancelLimitOrder({ limitOrderPubkey, owner, rentReceiver, binIds })` | Cancels bins, creates owner ATAs, unwraps SOL if needed, and appends `close_limit_order_if_empty`. |
+| `closeLimitOrderIfEmpty({ limitOrder, owner, rentReceiver })` | Closes an empty limit order account. |
+
+`placeLimitOrder` accepts `params: Omit&lt;PlaceLimitOrderParams, "padding"&gt;`; the SDK injects padding.
+
+## Rebalancing
+
+Rebalance helpers simulate a desired position update off-chain, then build a `rebalance_liquidity` instruction.
+
+| Method | Description |
+| - | - |
+| `simulateRebalancePositionWithBalancedStrategy(positionAddress, positionData, strategy, topUpAmountX, topUpAmountY, xWithdrawBps, yWithdrawBps)` | Builds balanced strategy parameters and simulates deposits/withdrawals. |
+| `simulateRebalancePosition(positionAddress, positionData, shouldClaimFee, shouldClaimReward, deposits, withdraws)` | Low-level simulation for custom rebalance parameters. |
+| `rebalancePosition(rebalancePositionResponse, maxActiveBinSlippage, rentPayer?, slippage?)` | Builds initialization instructions for missing bin arrays and the final rebalance instruction group. |
+
+Returned simulation data includes:
+
+* `rebalancePosition`
+* `simulationResult`
+* `binArrayExistence`
+* `binArrayCount`
+* `binArrayCost`
+* `bitmapExtensionCost`
+
+`rebalancePosition` returns:
+
+```typescript theme={"system"}
+{
+  initBinArrayInstructions: TransactionInstruction[]
+  rebalancePositionInstruction: TransactionInstruction[]
+}
+```
+
+## Seed Liquidity
+
+Seed liquidity helpers are for launch/operator workflows and return instruction groups rather than ready-to-send signed transactions.
+
+| Method | Return | Description |
+| - | - | - |
+| `seedLiquidity(owner, seedAmount, curvature, minPrice, maxPrice, base, payer, feeOwner, operator, lockReleasePoint, shouldSeedPositionOwner?)` | `Promise&lt;SeedLiquidityResponse&gt;` | Creates grouped instructions for owner proof, bin array/position initialization, and one-sided precise deposits across a price range. |
+| `seedLiquiditySingleBin(payer, base, seedAmount, price, roundingUp, positionOwner, feeOwner, operator, lockReleasePoint, shouldSeedPositionOwner?)` | `Promise&lt;SeedLiquiditySingleBinResponse&gt;` | Seeds token X into one bin and initializes bin array/position if needed. |
+
+`SeedLiquidityResponse` groups instructions for parallel/sequential execution:
+
+| Field | Description |
+| - | - |
+| `sendPositionOwnerTokenProveIxs` | Optional owner proof instructions. |
+| `initializeBinArraysAndPositionIxs` | Grouped setup instructions. |
+| `addLiquidityIxs` | Grouped deposit instructions. |
+| `costBreakdown` | Estimated rent/lamport costs. |
+
+## Bin Arrays
+
+| Method | Description |
+| - | - |
+| `initializeBinArrays(binArrayIndexes, funder)` | Returns instructions to initialize missing bin arrays, with compute-budget instruction prepended if needed. |
+| `getBinArrays()` | Fetch all initialized bin arrays for the pool. |
+| `getBinArrayForSwap(swapForY, count?)` | Fetch bin arrays in the swap direction. |
+
+`initialize_bin_array` is compute-heavy because it initializes bin prices. Use the SDK helper or add compute budget manually in custom flows.
+
+## Pool Controls
+
+| Method | Description |
+| - | - |
+| `setPairStatusPermissionless(enabled, creator)` | Creator-controlled status transaction for eligible customizable permissionless pools. |
+| `setPairStatus(enabled)` | Builds admin/creator pair status transaction using `lbPair.creator` as fee payer/signing account. |
+| `setActivationPoint(activationPoint)` | Builds activation point transaction using `lbPair.creator`. |
+| `isSwapDisabled(swapInitiator)` | Local check for disabled status, permissioned/customizable activation point, and pre-activation swap address. |
+| `canSyncWithMarketPrice(marketPrice, activeBinId)` | Checks whether active bin can be moved to market price without crossing liquidity. |
+| `syncWithMarketPrice(marketPrice, owner)` | Builds `go_to_a_bin` transaction and initializes bitmap extension when needed. |
+
+## Token-2022 Support
+
+The SDK automatically detects token program ownership when `DLMM.create` or `createMultiple` loads a pool. It also fetches transfer-hook extra account metas for token X, token Y, and reward mints.
+
+Internally, transaction builders use:
+
+```typescript theme={"system"}
+getPotentialToken2022IxDataAndAccounts(actionType, rewardIndex?)
+```
+
+This returns `RemainingAccountsInfoSlice[]` and account metas for Token-2022 transfer hooks. Public Token-2022 helper exports include:
+
+| Helper | Description |
+| - | - |
+| `getPotentialToken2022IxDataAndAccounts(actionType, rewardIndex?)` | Instance helper that returns remaining-account slices and metas for Token-2022 transfer hooks used by liquidity, swap, fee, and reward flows. |
+| `calculateTransferFeeIncludedAmount(amount, mint, epoch)` | Grosses up an amount so the receiver gets the intended net amount after transfer fee. |
+| `calculateTransferFeeExcludedAmount(amount, mint, epoch)` | Calculates net amount after transfer fee. |
+| `getExtraAccountMetasForTransferHook(connection, mint, mintAccount)` | Reads transfer-hook extra account metas for one mint. |
+| `getMultipleMintsExtraAccountMetasForTransferHook(connection, mintAccounts)` | Batch version used by `createMultiple`. |
+
+## Helper Exports
+
+### PDA Helpers
+
+| Helper | Description |
+| - | - |
+| `derivePresetParameterWithIndex` | Derives `PresetParameter2` with index key. |
+| `deriveLbPairWithPresetParamWithIndexKey` | Derives v2 pool PDA from preset parameter key and token mints. |
+| `derivePresetParameter`, `derivePresetParameter2` | Derive preset parameter accounts. |
+| `deriveLbPair`, `deriveLbPair2` | Derive legacy/v2 pool PDAs. |
+| `deriveCustomizablePermissionlessLbPair`, `derivePermissionLbPair` | Derive pool PDAs for specialized pool types. |
+| `deriveOracle`, `derivePosition`, `deriveBinArray`, `deriveReserve`, `deriveRewardVault` | Derive common pool accounts. |
+| `deriveTokenBadge`, `deriveOperator`, `deriveEventAuthority` | Derive program support accounts. |
+
+### Bin Array Helpers
+
+| Helper | Description |
+| - | - |
+| `binIdToBinArrayIndex` | Converts a bin ID to bin array index. |
+| `deriveBinArrayBitmapExtension` | Derives the bitmap extension account for a pool. |
+| `getBinArrayLowerUpperBinId` | Returns lower/upper bin IDs for a bin array index. |
+| `isBinIdWithinBinArray` | Checks whether a bin belongs to a bin array. |
+| `getBinFromBinArray` | Returns one bin from a loaded bin array. |
+| `isOverflowDefaultBinArrayBitmap` | Checks if a bin array index requires bitmap extension. |
+| `findNextBinArrayIndexWithLiquidity` | Finds next initialized bin array with liquidity in a direction. |
+| `findNextBinArrayWithLiquidity` | Same, but returns an account from loaded bin arrays. |
+| `getBinArraysRequiredByPositionRange` | Returns bin array PDAs required for a position range. |
+| `getBinIdIndexInBinArray` | Converts bin ID to its index inside a bin array. |
+| `binDeltaToMinMaxBinId` | Converts a bin delta around an active bin into min/max bin IDs. |
+| `decodeRewardPerTokenStored` | Decodes reward-per-token state from a bin. |
+| `enumerateBins` | Iterates bins across loaded bin arrays. |
+| `getBinArrayInfoForNonContiguousBinIds` | Returns bin array metas and bitmap account for arbitrary bin IDs. |
+
+### Position Helpers
+
+| Helper | Description |
+| - | - |
+| `wrapPosition` | Wraps raw account data in a position wrapper. |
+| `getBinArrayIndexesCoverage`, `getBinArrayKeysCoverage`, `getBinArrayAccountMetasCoverage` | Derive bin array coverage for ranges. |
+| `getPositionLowerUpperBinIdWithLiquidity` | Trims a position range to bins with liquidity. |
+| `isPositionNoFee`, `isPositionNoReward` | Checks whether processed position data has claimable fees/rewards. |
+| `chunkBinRangeIntoExtendedPositions`, `chunkBinRange`, `chunkPositionBinRange` | Splits bin ranges for transaction and dynamic-position limits. |
+| `calculatePositionSize`, `getPositionRentExemption`, `getPositionExpandRentExemption` | Rent and account-size helpers. |
+| `getExtendedPositionBinCount`, `decodeExtendedPosition` | Dynamic position data helpers. |
+
+### Strategy And Weight Helpers
+
+| Helper | Description |
+| - | - |
+| `getPriceOfBinByBinId` | Converts a bin ID and bin step to a decimal price. |
+| `calculateSpotDistribution` | Builds spot weight distribution. |
+| `calculateBidAskDistribution` | Builds bid/ask weight distribution. |
+| `calculateNormalDistribution` | Builds curve/normal distribution. |
+| `toAmountsBothSideByStrategy` | Converts strategy into token amounts per bin. |
+| `autoFillYByStrategy`, `autoFillXByStrategy` | Calculates missing side amount for strategy deposits. |
+| `toStrategyParameters` | Converts SDK strategy enum into program strategy parameters. |
+| `toWeightDistribution` | Converts bps distributions into program weights. |
+| `fromWeightDistributionToAmount`, `fromWeightDistributionToAmountOneSide` | Converts weights back to token amounts. |
+| `toAmountBidSide`, `toAmountAskSide`, `toAmountBothSide` | Lower-level helpers for converting weight distribution to token amounts by side. |
+| `autoFillYByWeight`, `autoFillXByWeight` | Calculates missing side amount for weight deposits. |
+
+### Fee And Math Helpers
+
+| Helper | Description |
+| - | - |
+| `getBaseFee`, `getVariableFee`, `getTotalFee` | Fee rate helpers. |
+| `computeFee`, `computeFeeFromAmount`, `computeProtocolFee` | Fee amount helpers. |
+| `getExcludedFeeAmount`, `getIncludedFeeAmount`, `splitFee` | Fee-inclusive/exclusive calculations. |
+| `computeBaseFactorFromFeeBps` | Converts fee bps into base factor and base fee power factor. |
+| `getQPriceFromId`, `getQPriceBaseFactor` | Q64.64 price helpers. |
+| `mulShr`, `shlDiv`, `mulDiv`, `pow` | Fixed-point arithmetic helpers. |
+| `getC`, `distributeAmountToCompressedBinsByRatio` | Seed-liquidity and compression math helpers. |
+| `generateAmountForBinRange`, `generateBinAmount`, `compressBinAmount`, `findOptimumDecompressMultiplier` | Seed liquidity compression helpers. |
+
+### RPC And Transaction Helpers
+
+| Helper | Description |
+| - | - |
+| `chunks`, `range` | Array utilities. |
+| `chunkedFetchMultiplePoolAccount`, `chunkedFetchMultipleBinArrayBitmapExtensionAccount` | Batched account fetch helpers. |
+| `chunkedGetMultipleAccountInfos`, `chunkedGetProgramAccounts` | RPC-safe batched reads. |
+| `getTokenDecimals`, `getTokenBalance` | Token account reads. |
+| `getOrCreateATAInstruction` | Returns ATA address and optional create instruction. |
+| `wrapSOLInstruction`, `unwrapSOLInstruction` | Native SOL wrapping helpers. |
+| `parseLogs` | Parses Anchor events from transaction logs. |
+| `getEstimatedComputeUnitUsageWithBuffer`, `getEstimatedComputeUnitIxWithBuffer` | Simulation-based compute budget helpers. |
+| `getDefaultExtendPositionCU`, `getSimulationComputeUnits` | Lower-level compute unit helpers. |
+| `createProgram`, `decodeAccount`, `getAccountDiscriminator` | Anchor program/account helpers. |
+| `capSlippagePercentage`, `getAndCapMaxActiveBinSlippage`, `getSlippageMaxAmount`, `getSlippageMinAmount` | Slippage helpers. |
+| `getBinCount`, `getPositionCountByBinCount` | Position/bin count helpers. |
+| `resetUninvolvedLiquidityParams` | Clears liquidity params outside the active update range. |
+| `encodePositionPermissions` | Encodes position permission bits. |
+
+### Pool State Helpers
+
+| Helper | Description |
+| - | - |
+| `getTokenProgramId` | Returns token X/Y program IDs from an `LbPair`. |
+| `isSupportLimitOrder` | Checks whether a pool supports limit order behavior. |
+| `getFeeMode` | Returns fee-on-input/output behavior for a swap direction. |
+
+### Rebalance Helper Exports
+
+| Helper | Description |
+| - | - |
+| `getLiquidityStrategyParameterBuilder` | Returns the strategy parameter builder for spot, curve, or bid/ask strategies. |
+| `suggestBalancedXParametersFromY`, `suggestBalancedYParametersFromX` | Suggest balanced strategy parameters from a single-side input. |
+| `getAutoFillAmountByRebalancedPosition` | Computes autofill amounts for rebalance simulation. |
+| `buildLiquidityStrategyParameters` | Builds rebalance liquidity strategy parameters. |
+| `buildBitFlagAndNegateStrategyParameters` | Encodes rebalance deposit/withdraw flags. |
+| `getAmountInBinsBidSide`, `getAmountInBinsAskSide`, `toAmountIntoBins` | Convert rebalance amounts into per-bin values. |
+| `getRebalanceBinArrayIndexesAndBitmapCoverage` | Computes bin array coverage and bitmap extension requirements for rebalance. |
+
+### Low-Level Export Notes
+
+These exports are available for advanced integrations and tests, but most applications do not need to call them directly:
+
+| Export | Description |
+| - | - |
+| `swapExactInQuoteAtBin`, `swapExactOutQuoteAtBin`, `getAmountIn`, `getAmountOut`, `getBinMaxAmountOut`, `getLimitOrderLiquidity` | Single-bin quote and liquidity helpers used internally by quote simulation. |
+| `BalancedStrategyBuilder`, `SpotStrategyParameterBuilder`, `CurveStrategyParameterBuilder`, `BidAskStrategyParameterBuilder` | Strategy builder classes used by rebalance and liquidity strategy helpers. |
+| `PositionV2Wrapper`, `LimitOrderV1Wrapper`, `LimitOrderBinDataWrapper` | Account wrapper classes for parsed position and limit order data. |
+| `capBps`, `MAX_BPS`, `REBALANCE_POSITION_PADDING` | Rebalance helper constants and bounds. |
+| `DEFAULT_ADD_LIQUIDITY_CU`, `DEFAULT_EXTEND_POSITION_HIGH_CU`, `DEFAULT_EXTEND_POSITION_LOW_CU`, `DEFAULT_INIT_POSITION_CU`, `DEFAULT_INIT_BIN_ARRAY_CU`, `MIN_CU_BUFFER`, `MAX_CU_BUFFER`, `MAX_CU` | Compute unit defaults used by transaction builders. |
+| `POSITION_MIN_SIZE`, `POSITION_BIN_DATA_SIZE`, `LIMIT_ORDER_MIN_SIZE`, `LIMIT_ORDER_BIN_DATA_SIZE` | Dynamic account size constants. |
+| `ClockLayout`, `MEMO_PROGRAM_ID` | Clock account decoder and memo program constant used by v2 builders. |
+| `chunkDepositWithRebalanceEndpoint` | Internal-style helper for chunking deposit instructions through the rebalance endpoint. |
+| `derivePlaceHolderAccountMeta` | Derives the placeholder account meta used for optional accounts. |
+| `getTokensMintFromPoolAddress` | Helper for decoding token mints from a pool address. |
+| `DLMMError` | Legacy SDK error export alongside `DlmmSdkError`. |
+
+### Account Filters
+
+Use these with `getProgramAccounts`:
+
+| Filter | Description |
+| - | - |
+| `presetParameter2BinStepFilter` | Filter `PresetParameter2` by bin step. |
+| `presetParameter2BaseFactorFilter` | Filter `PresetParameter2` by base factor. |
+| `presetParameter2BaseFeePowerFactor` | Filter `PresetParameter2` by base fee power factor. |
+| `binArrayLbPairFilter` | Filter bin arrays by pool. |
+| `positionOwnerFilter` | Filter positions by owner. |
+| `positionLbPairFilter` | Filter positions by pool. |
+| `positionV2Filter` | Filter `PositionV2` accounts. |
+| `limitOrderFilter` | Filter limit order accounts. |
+| `limitOrderOwnerFilter` | Filter limit orders by owner. |
+| `limitOrderLbPairFilter` | Filter limit orders by pool. |
+
+## Oracle Helpers
+
+The `getOracle()` instance method returns an `IDynamicOracle` wrapper. It exposes observation and TWAP functionality around the pool oracle account.
+
+Important exports:
+
+| Export | Description |
+| - | - |
+| `wrapOracle` | Wraps a raw oracle account. |
+| `DynamicOracle` | Oracle wrapper class. |
+| `Observation` | Observation wrapper. |
+| `TwapResult&lt;T&gt;` | Result type for TWAP reads. |
+
+## Limit Order Wrappers
+
+Low-level exports from `helpers/limitOrders` include:
+
+| Export | Description |
+| - | - |
+| `decodeLimitOrderBinData` | Decodes dynamic limit order bin data bytes. |
+| `wrapLimitOrder` | Wraps a `LimitOrder` account and dynamic bin data. |
+| `LimitOrderV1Wrapper` | Wrapper implementing the limit order interface. |
+| `LimitOrderBinDataWrapper` | Wrapper for one limit order bin entry. |
+| `ParsedLimitOrder`, `ParsedLimitOrderBinData` | Parsed limit order views. |
+
+## Error Handling
+
+Quote methods throw `DlmmSdkError` for SDK-level quote failures. Common cases include:
+
+| Code | Meaning |
+| - | - |
+| `INVALID_MAX_EXTRA_BIN_ARRAYS` | `maxExtraBinArrays` is outside the supported range. |
+| `SWAP_QUOTE_INSUFFICIENT_LIQUIDITY` | Loaded bin arrays do not contain enough liquidity for the requested quote. |
+
+Transaction builders may also throw standard `Error` objects for invalid ranges, missing accounts, existing pools, no claimable fees/rewards, or unsupported state.
+
+## Notes
+
+* All token amounts are raw integer token amounts, usually `BN`, not UI decimals.
+* Slippage values in quote methods are bps. A 0.5% slippage is `new BN(50)`.
+* `swapForY = true` means swapping token X into token Y.
+* Most current transaction builders use the v2 program instructions and support Token-2022.
+* Legacy methods remain exported for older flows, but new integrations should prefer v2 creation, v2 liquidity, and v2 swap paths.
+* Methods that return `TransactionInstruction[][]` or grouped instruction objects are intended for callers that need custom transaction assembly, ALT usage, or parallel execution.
+* After sending a transaction, call `refetchStates()` before quoting or reading from the same `DLMM` instance again.
+
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.

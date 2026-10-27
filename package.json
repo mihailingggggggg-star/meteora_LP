@@ -1,0 +1,20 @@
+{
+  "name": "meteora-terminal",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,engine -c magenta,yellow \"npm run dev:web\" \"npm run dev:engine\"",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:engine": "npm --workspace apps/engine run dev",
+    "build": "npm --workspace apps/web run build",
+    "start": "concurrently -n web,engine -c magenta,yellow \"npm --workspace apps/web run start\" \"npm --workspace apps/engine run start\"",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000 --no-autoupdate"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

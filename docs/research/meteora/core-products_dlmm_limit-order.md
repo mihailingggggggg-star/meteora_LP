@@ -1,0 +1,101 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.meteora.ag/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# DLMM Limit Order
+
+> Learn how DLMM Limit Orders place liquidity at selected price bins to create on-chain buy and sell strategies inside limit-order-enabled DLMM pools.
+
+DLMM Limit Order lets users place liquidity at specific bins so their position behaves like a buy or sell order at a chosen price. It brings a familiar orderbook-style experience into DLMM's on-chain bin model.
+
+Limit orders are available only on DLMM pools whose function mode supports limit orders. In the `lb_clmm` program, a pool supports either liquidity mining or limit-order behavior; it does not run both modes at the same time.
+
+Instead of submitting a market swap immediately, a user can place an order at a target bin. When swaps move through that bin, the order can be filled by normal pool activity. This creates a more flexible trading and liquidity experience: users can express a price view, while the pool still benefits from deeper liquidity at those prices.
+
+## Why Limit Orders Matter
+
+> **Price-Targeted Liquidity**
+>
+> Users can place liquidity where they want to buy or sell, instead of manually watching the market and swapping at the right moment.
+
+> **More Useful Pool Depth**
+>
+> Limit orders add liquidity to specific bins, strengthening depth around the prices where traders expect activity.
+
+> **DCA Strategies**
+>
+> Users can place orders across multiple bins to gradually enter or exit a position as price moves.
+
+> **Native DLMM Execution**
+>
+> Orders are filled through DLMM swap flow, so they can participate in the same bin-based market structure as other liquidity.
+
+## How It Works
+
+A DLMM pool is a ladder of bins. A limit order chooses one or more bins and places a token amount there. One limit-order account can cover up to `50` bins.
+
+```text theme={"system"}
+Lower prices                Target bin                 Higher prices
+[ bin ][ bin ][ bin ]  ->  [ limit order ]  ->  [ bin ][ bin ][ bin ]
+```
+
+If the market reaches the selected bin and swaps consume the order's liquidity, the order is filled. If the market never reaches that bin, the order remains open until the user cancels it.
+
+DLMM supports both sides:
+
+* **Bid side:** place token Y at bins at or below the active bin to buy token X when price reaches those bins.
+* **Ask side:** place token X at bins at or above the active bin to sell token X for token Y when price reaches those bins.
+
+Orders can be placed by absolute bin ID or by relative bin offset from an observed active bin. Relative placement includes a max active-bin slippage check so the order is not created if the live active bin has moved too far from the user's expected active bin.
+
+> [!NOTE]
+>
+> A limit order is not a separate centralized orderbook. It is an on-chain DLMM account that places order liquidity into selected bins.
+
+## Limit Orders vs LP Positions
+
+Both LP positions and limit orders use DLMM bins, but they are designed for different goals.
+
+| Feature | LP Position | Limit Order |
+| - | - | - |
+| Primary goal | Earn fees by providing liquidity across a range | Buy or sell at selected prices |
+| Price coverage | Usually multiple bins across a strategy range | Specific target bins |
+| Active management | Rebalance to stay near market activity | Cancel if the order no longer matches your view |
+| Outcome | Position composition changes as price moves | Order fills when swaps cross the selected bin |
+
+## Fee Sharing
+
+When a swap fills both market-maker liquidity and limit-order liquidity, the trading fee is split between the relevant participants according to the pool's fee logic. DLMM allocates a share of the applicable fee to limit-order liquidity when it contributes to the fill.
+
+This means limit orders are not just passive instructions waiting on a matching engine. They are part of the liquidity surface that traders route through.
+
+At the program level, filled limit-order liquidity and market-maker liquidity are accounted separately. Limit-order fee accounting is tracked per bin for ask-side and bid-side orders, and the current program constant allocates `50%` of the limit-order portion of fees to limit-order participants, with the remaining portion treated as protocol-side fee according to the fee split logic.
+
+## Product Use Cases
+
+> **Buy the dip**
+>
+> Place bid-side orders below the current price. If the market moves down into those bins, your order can buy token X with token Y.
+
+> **Take profit**
+>
+> Place ask-side orders above the current price. If demand pushes the market upward, your order can sell token X into token Y.
+
+> **DCA into a token**
+>
+> Split orders across several lower bins. This creates a gradual entry strategy instead of one large market buy.
+
+> **DCA out of a token**
+>
+> Split ask orders across several higher bins. This creates a gradual exit strategy as price rises.
+
+## Important Considerations
+
+Limit orders are still exposed to on-chain execution realities. A target bin may never be reached, may be partially filled, or may fill during a volatile market move. Users should monitor open orders and cancel orders that no longer match their strategy.
+
+> [!WARNING]
+>
+> A DLMM Limit Order is not guaranteed execution. It only fills if swap flow reaches the selected bin and consumes the order's available liquidity.
+
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.

@@ -1,0 +1,220 @@
+# Phantom Developer Documentation
+
+> Phantom is a leading crypto wallet for Solana, Ethereum, Bitcoin, Base, and Polygon. Monad and Sui support have been deprecated. This documentation covers two main integration paths: the Phantom MCP server (giving AI agents a wallet) and Phantom Connect SDKs (building apps with embedded wallets and social login).
+
+## Getting Started
+
+Start here to understand what Phantom offers and choose the right integration path.
+
+- [Build with Phantom](https://docs.phantom.com/introduction): Overview of Phantom developer tools — routes to either the MCP server (AI agents) or Connect SDKs (app users)
+- [Phantom Connect](https://docs.phantom.com/phantom-connect): Onboard users with embedded wallets using Google or Apple social login, or connect existing Phantom extension wallets
+- [SDK Overview](https://docs.phantom.com/wallet-sdks-overview): Compare React, React Native, and Browser SDKs — includes feature matrix and platform guidance
+
+## Phantom MCP server
+
+The Phantom MCP server (`@phantom/mcp-server`) gives AI agents a Phantom wallet. Agents can sign transactions, transfer tokens, swap with no fees, and interact on-chain across Solana, Ethereum, and Bitcoin. Monad and Sui support have been deprecated. Device-code login does not require a Phantom Portal App ID. `@phantom/cli@3.0.0` and `@phantom/mcp-server@1.2.9` expose 30 tools. `wallet_status` reads the local session and does not prove server acceptance. Arbitrum sends are rejected. Phantom does not charge transaction fees, platform fees, or commission on swaps.
+
+- [Phantom MCP Server Overview](https://docs.phantom.com/phantom-mcp-server): What the MCP server is, quick install, available tools, and supported clients (Claude Desktop, Cursor, Claude Code)
+- [Setup and Reference](https://docs.phantom.com/phantom-mcp-server/setup): Installation, environment variables, the 30-tool inventory, supported networks, session refresh, and troubleshooting
+- [Tool reference](https://docs.phantom.com/phantom-mcp-server/tools): Parameters and examples for the released CLI 3.0 schemas
+- [Account types](https://docs.phantom.com/phantom-mcp-server/account-types): User wallets and agent wallets
+- [Perps](https://docs.phantom.com/phantom-mcp-server/perps): Hyperliquid perpetuals tools
+- [OpenClaw plugin](https://docs.phantom.com/phantom-mcp-server/openclaw-plugin): OpenClaw setup for the same wallet tools
+
+## Quickstarts
+
+Step-by-step guides to get a working Phantom Connect integration running in minutes.
+
+- [Next.js Quickstart](https://docs.phantom.com/recipes/quickstarts/nextjs): Full setup guide for Next.js App Router including provider config, auth callback, and portal setup
+- [React (Vite) Quickstart](https://docs.phantom.com/recipes/quickstarts/react): Full setup guide for React with Vite including provider config and routing
+- [Vanilla JavaScript Quickstart](https://docs.phantom.com/recipes/quickstarts/vanilla-js): Plain JavaScript integration using the Browser SDK with event listeners and callbacks
+- [React Native Quickstart](https://docs.phantom.com/recipes/quickstarts/react-native): Mobile app setup including dependencies, app scheme, polyfills, and wallet screen
+
+## Recipes
+
+Copy-paste code examples for the most common Phantom Connect integration patterns.
+
+### Authentication
+
+- [Social Login (Google, Apple)](https://docs.phantom.com/recipes/auth/social-login): Let users sign in with Google or Apple and automatically receive an embedded wallet — includes React, Browser SDK, and React Native examples
+- [Browser Extension Login](https://docs.phantom.com/recipes/auth/extension-login): Connect to existing Phantom browser extension wallets with fallback handling
+- [Session Management](https://docs.phantom.com/recipes/auth/session-management): Persist wallet connections across page reloads using the SDK's automatic session persistence
+- [Sign-in with Solana (SIWS)](https://docs.phantom.com/recipes/auth/sign-in-with-solana): Wallet-based authentication — user signs a message, backend verifies the signature to prove ownership
+- [Recipes overview](https://docs.phantom.com/recipes): Index of Phantom Connect recipes
+
+### Payments
+
+- [Send SOL](https://docs.phantom.com/recipes/payments/send-sol): Transfer native SOL tokens using SystemProgram transfer instruction
+- [Send USDC](https://docs.phantom.com/recipes/payments/send-usdc): Transfer USDC stablecoin payments with automatic recipient token account creation
+- [Send any SPL Token](https://docs.phantom.com/recipes/payments/send-spl-token): Transfer any SPL token by mint address and decimals, including token account creation
+- [Request Payment](https://docs.phantom.com/recipes/payments/request-payment): Generate payment request links and QR codes using the Solana Pay standard
+
+### Signatures
+
+- [Sign a Message](https://docs.phantom.com/recipes/signatures/sign-message): Request a signature from the connected wallet for authentication or verification
+- [Verify a Signature](https://docs.phantom.com/recipes/signatures/verify-signature): Server-side signature verification using tweetnacl and bs58 to prove wallet ownership
+- [Sign Typed Data (EIP-712)](https://docs.phantom.com/recipes/signatures/sign-typed-data): Sign structured, human-readable data on Ethereum/EVM chains
+- [Sponsored transaction](https://docs.phantom.com/recipes/transactions/sponsored-transaction): Embedded fee-payer flow with a base64url `presignTransaction` callback
+
+### Wallet Operations
+
+- [Check Wallet Balance](https://docs.phantom.com/recipes/wallet-operations/check-balance): Fetch SOL and SPL token balances for a connected wallet using the Solana Connection API
+- [Get All Token Accounts](https://docs.phantom.com/recipes/wallet-operations/get-token-accounts): List all SPL token accounts and balances for a wallet to display a portfolio
+
+### Transactions
+
+- [Add Priority Fees](https://docs.phantom.com/recipes/transactions/add-priority-fees): Add ComputeBudgetProgram instructions for faster confirmation during network congestion
+- [Check Transaction Status](https://docs.phantom.com/recipes/transactions/check-transaction-status): Poll and monitor transaction confirmation status (pending, confirmed, finalized)
+
+## Phantom Connect SDKs
+
+Build wallet-connected apps with React, React Native, or framework-agnostic JavaScript. All SDKs support social login (Google, Apple), browser extension connection, and multi-chain operations.
+
+### React SDK
+
+- [React SDK](https://docs.phantom.com/sdks/react-sdk): Install `@phantom/react-sdk`, wrap your app in `PhantomProvider`, and use hooks like `useConnect`, `useAccounts`, `useSolana`, and `useEthereum`
+- [Connect](https://docs.phantom.com/sdks/react-sdk/connect): Wallet connection methods — Google, Apple, and extension providers with `useConnect` hook
+- [Sign Messages](https://docs.phantom.com/sdks/react-sdk/sign-messages): Message signing for authentication using `useSolana` and `useEthereum` hooks
+- [Sign and Send Transactions](https://docs.phantom.com/sdks/react-sdk/sign-and-send-transaction): Transaction signing and broadcasting with chain-specific hooks
+
+### React Native SDK
+
+- [React Native SDK](https://docs.phantom.com/sdks/react-native-sdk): Install `@phantom/react-native-sdk` with Expo dependencies, configure app scheme, and add required polyfills
+- [Connect](https://docs.phantom.com/sdks/react-native-sdk/connect): Mobile wallet connection with OAuth providers and connection modal UI
+- [Sign Messages](https://docs.phantom.com/sdks/react-native-sdk/sign-messages): Message signing on mobile with hardware-backed key security
+- [Sign and Send Transactions](https://docs.phantom.com/sdks/react-native-sdk/sign-and-send-transaction): Mobile transaction handling with system browser authentication
+
+### Browser SDK
+
+- [Browser SDK](https://docs.phantom.com/sdks/browser-sdk): Install `@phantom/browser-sdk` and create an instance with `new BrowserSDK()` for framework-agnostic wallet integration
+- [Connect](https://docs.phantom.com/sdks/browser-sdk/connect): Browser-based wallet connection with `sdk.connect({ provider })` for Google, Apple, or the Phantom browser extension (injected)
+- [Sign Messages](https://docs.phantom.com/sdks/browser-sdk/sign-messages): Message signing via `sdk.solana.signMessage()` and `sdk.ethereum.signPersonalMessage()`
+- [Sign and Send Transactions](https://docs.phantom.com/sdks/browser-sdk/sign-and-send-transaction): Transaction handling with `sdk.solana.signAndSendTransaction()` and `sdk.ethereum.sendTransaction()`
+
+### Guides
+
+- [Wallet Authentication with JWTs](https://docs.phantom.com/sdks/guides/wallet-authentication-with-jwts): Implement custom JWT-based authentication using wallet signatures for backend verification
+
+## Phantom Portal
+
+Self-service dashboard for registering your app, configuring allowed origins, and managing branding within Phantom.
+
+Phantom Portal is not accepting new applications at this time. New sign-ups for Phantom Connect SDK access and new app submissions to the Phantom app directory are paused. Existing Portal apps and App IDs are not affected.
+
+- [Portal Overview](https://docs.phantom.com/phantom-portal/portal): Dashboard for app configuration, branding, access modes (DISABLED, PRIVATE, PUBLIC), and domain verification
+- [Get Started](https://docs.phantom.com/phantom-portal/getting-started): Six-step setup guide for an existing app, from sign-in through App ID retrieval
+- [Sign in to Your Account](https://docs.phantom.com/phantom-portal/create-account): Sign in to an existing account with Google or Apple
+- [Open Your App](https://docs.phantom.com/phantom-portal/create-app): Open an existing application and review its details
+- [Verify Your Domain](https://docs.phantom.com/phantom-portal/verify-domain): DNS-based domain verification required for public listing in Phantom
+- [Configure URLs](https://docs.phantom.com/phantom-portal/configure-urls): Set allowed origins and redirect URLs for your SDK integration
+- [Add App Information](https://docs.phantom.com/phantom-portal/edit-app-info): Configure icon, cover image, description, and branding metadata
+- [Get Your App ID](https://docs.phantom.com/phantom-portal/get-app-id): Obtain the `appId` credential required by all Phantom Connect SDKs
+
+## Browser Extension — Solana
+
+Integrate directly with the Phantom browser extension for Solana using the injected `window.phantom.solana` provider.
+
+- [Get Started with Solana](https://docs.phantom.com/solana/integrating-phantom): Solana integration overview and architecture
+- [Detect the Provider](https://docs.phantom.com/solana/detecting-the-provider): Check if Phantom is installed via `window.phantom?.solana?.isPhantom`
+- [Establish a Connection](https://docs.phantom.com/solana/establishing-a-connection): Call `provider.connect()` to request the user's public key
+- [Send a Legacy Transaction](https://docs.phantom.com/solana/sending-a-transaction): Build and send transactions using `@solana/web3.js` Transaction class
+- [Send a Versioned Transaction](https://docs.phantom.com/solana/sending-a-transaction-1): Versioned transactions with Address Lookup Tables for larger account sets
+- [Sign a Message](https://docs.phantom.com/solana/signing-a-message): Arbitrary message signing for authentication and verification
+- [Error Messages and Codes](https://docs.phantom.com/solana/errors): Solana error codes reference (4001, 4100, etc.)
+
+## Browser extension — EVM networks
+
+Integrate with Phantom on EVM networks using the EIP-1193 standard provider at `window.phantom.ethereum`. This guide covers Ethereum, Base, Polygon, Robinhood Chain, and Arc. Robinhood Chain uses chain ID `4663` (`0x1237`) on mainnet and `46630` (`0xb626`) on testnet. Arc uses chain ID `5042` (`0x13b2`) on mainnet and `5042002` (`0x4cef52`) on testnet. Testnet Mode is required for testnets. Monad support has been deprecated.
+
+- [Get Started with EVM](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/getting-started): EVM integration overview, network IDs covered by the guide, and Monad deprecation guidance
+- [Detect the Provider](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/detecting-the-provider): Check for Phantom via `window.phantom?.ethereum?.isPhantom`
+- [Establish a Connection](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/establishing-a-connection): Request accounts via `eth_requestAccounts` RPC method
+- [Send a Transaction](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/sending-a-transaction): Send EVM transactions via `eth_sendTransaction`
+- [Sign a Message](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/signing-a-message): EVM message signing with `personal_sign`
+- [Provider API Reference](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/provider-api-reference): Complete EVM provider API — properties, events, methods, and error codes
+- [Provider methods](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/provider-api-reference/methods): `request` and `isConnected`
+- [Provider events](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/provider-api-reference/events): `connect`, `disconnect`, `accountsChanged`, and `chainChanged`
+- [Provider properties](https://docs.phantom.com/ethereum-monad-testnet-base-and-polygon/provider-api-reference/properties): `isPhantom`, `chainId`, `selectedAddress`, and `networkVersion`
+
+## Browser Extension — Bitcoin (deprecated)
+
+The `window.phantom.bitcoin` injected provider has been deprecated.
+
+- [Get Started with Bitcoin](https://docs.phantom.com/bitcoin/integrating-phantom): Bitcoin integration overview
+- [Detect the Provider](https://docs.phantom.com/bitcoin/detecting-the-provider): Check for Phantom via `window.phantom?.bitcoin?.isPhantom`
+- [Establish a Connection](https://docs.phantom.com/bitcoin/establishing-a-connection): Call `provider.requestAccounts()` for Bitcoin address
+- [Send a Transaction](https://docs.phantom.com/bitcoin/sending-a-transaction): Bitcoin transaction construction and sending
+- [Sign a Message](https://docs.phantom.com/bitcoin/signing-a-message): Bitcoin message signing
+- [Provider API Reference](https://docs.phantom.com/bitcoin/provider-api-reference): Complete Bitcoin provider API reference
+
+## Browser Extension — Sui (deprecated)
+
+Sui support through `window.phantom.sui` has been deprecated.
+
+- [Get Started with Sui](https://docs.phantom.com/sui/getting-started-with-sui): Sui deprecation notice
+- [Detect the Provider](https://docs.phantom.com/sui/detecting-the-provider): Check for Phantom via `window.phantom?.sui?.isPhantom`
+- [Establish a Connection](https://docs.phantom.com/sui/establishing-a-connection): Connect to Sui wallet
+- [Send a Transaction](https://docs.phantom.com/sui/sending-a-transaction): Sui transaction handling
+- [Sign a Message](https://docs.phantom.com/sui/signing-a-message): Sui message signing
+
+## Mobile Deep Links
+
+iOS and Android native apps can interact with Phantom through universal links (`https://phantom.com/ul/v1/<method>`). Currently Solana only.
+
+- [Deep Links Overview](https://docs.phantom.com/phantom-deeplinks/deeplinks-ios-and-android): Protocol format, supported methods, and universal link vs custom scheme comparison
+- [Handle Sessions](https://docs.phantom.com/phantom-deeplinks/handling-sessions): Session structure, validation with base58 and cryptographic signatures
+- [Specifying Redirects](https://docs.phantom.com/phantom-deeplinks/specifying-redirects): HTTPS URL redirects vs custom scheme URIs for redirect_link parameters
+- [Encryption](https://docs.phantom.com/phantom-deeplinks/encryption): Symmetric key encryption and Diffie-Hellman key exchange for secure communications
+- [Limitations](https://docs.phantom.com/phantom-deeplinks/limitations): Android 500KB limit, iOS 1MB limit
+- [Deep link provider methods](https://docs.phantom.com/phantom-deeplinks/provider-methods): `connect`, `disconnect`, `signTransaction`, `signAllTransactions`, and `signMessage`. `signAndSendTransaction` is deprecated.
+- [Deep link browse, swap, and token pages](https://docs.phantom.com/phantom-deeplinks/other-methods): `browse`, `swap`, and fungible token links
+
+## Developer Tools
+
+AI tools, testing, and debugging resources for building with Phantom.
+
+- [AI-Assisted Development](https://docs.phantom.com/developer-powertools/ai-tools): Use Phantom's MCP servers and Cursor AI prompts to generate production-ready SDK code
+- [Phantom MCP Server Setup](https://docs.phantom.com/phantom-mcp-server/setup): MCP server that gives AI agents direct access to Phantom wallet operations (sign transactions, transfer tokens, view addresses)
+- [Phantom Connect SDK MCP Server](https://docs.phantom.com/resources/mcp-server): Model Context Protocol server for AI coding assistants — search Phantom docs from Cursor, Claude Code, or VS Code
+- [Cursor AI Prompts](https://docs.phantom.com/resources/cursor-prompts): One-shot prompts for generating React, React Native, and Browser SDK implementations
+- [Testnet Mode](https://docs.phantom.com/developer-powertools/testnet-mode): Access supported test networks, including Solana devnet/testnet, Ethereum Sepolia, Polygon Amoy, Base Sepolia, Robinhood Chain Testnet, and Arc Testnet
+- [Mobile Web Debugging](https://docs.phantom.com/developer-powertools/mobile-web-debugging): Debug mobile web dapps using Safari (iOS) and Chrome (Android)
+- [Wallet Standard](https://docs.phantom.com/developer-powertools/wallet-standard): Chain-agnostic Wallet Standard interface integration for Solana dapps
+
+## Security and Advanced Features
+
+- [Domain and Transaction Warnings](https://docs.phantom.com/developer-powertools/domain-and-transaction-warnings): Understanding new domain warnings, app identity verification warnings, transaction simulation warnings, and how to resolve them
+- [Transaction Validation](https://docs.phantom.com/developer-powertools/lighthouse): Lighthouse assertion instructions for runtime transaction validation
+- [Signing a message](https://docs.phantom.com/developer-powertools/signing-a-message): SIWS (Solana), SIWE (EIP-4361), and SIWx (CAIP-122) authentication standards
+- [Developer powertools overview](https://docs.phantom.com/developer-powertools/overview): Index of Phantom developer powertools
+- [Shortcuts](https://docs.phantom.com/developer-powertools/shortcuts): Phantom shortcut links
+- [Token pages](https://docs.phantom.com/developer-powertools/token-pages): Token page behavior in Phantom
+- [Solana Priority Fees](https://docs.phantom.com/developer-powertools/solana-priority-fees): How Phantom auto-calculates priority fees based on compute units and congestion
+- [Solana Versioned Transactions](https://docs.phantom.com/developer-powertools/solana-versioned-transactions): Address Lookup Tables enabling up to 256 accounts per transaction
+- [Solana Token Extensions (Token22)](https://docs.phantom.com/developer-powertools/solana-token-extensions-token22): Token-2022 program support for interest-bearing, transfer fees, and metadata extensions
+
+## Best Practices
+
+- [Go-live checklist](https://docs.phantom.com/best-practices/launching-a-dapp): Pre-launch verification covering Portal setup, integration testing, and security checks
+- [Display apps within dialogs](https://docs.phantom.com/best-practices/displaying-your-app): How Phantom reads Open Graph tags and favicon for dialog branding
+- [Home tab fungibles](https://docs.phantom.com/best-practices/tokens/home-tab-fungibles): Fungible token display in the Phantom home tab
+- [Collectibles, NFTs, and semi-fungibles](https://docs.phantom.com/best-practices/tokens/collectibles-nfts-and-semi-fungibles): Collectible display guidance
+- [Supported media types](https://docs.phantom.com/best-practices/tokens/supported-media-types): Media types Phantom can render
+- [Token verification](https://docs.phantom.com/best-practices/tokens/token-verification): Token verification signals
+- [Token Display](https://docs.phantom.com/best-practices/tokens): Token metadata, verification, and display for fungibles, NFTs, and semi-fungibles
+
+## Resources
+
+- [FAQ](https://docs.phantom.com/resources/faq): Common questions about Phantom Connect, embedded vs extension wallets, SDK selection, and Robinhood Chain and Arc support through the traditional EVM provider
+- [Demo Apps](https://docs.phantom.com/resources/sandbox): Multi-chain sandbox on CodeSandbox, Solana-only sandbox, and React Native deep link demo
+- [Logos and assets](https://docs.phantom.com/resources/assets): Phantom brand assets for your integration
+- [Cursor plugin](https://docs.phantom.com/resources/cursor-plugin): Cursor plugin for Phantom docs and wallet tools
+
+## Optional
+
+- [Updates](https://docs.phantom.com/updates): Changelog and release notes
+- [App access modes](https://docs.phantom.com/phantom-portal/edit-app-info): Access modes (`PRIVATE`, `PUBLIC`, `DISABLED`) and team member limits
+- [Phantom CLI](https://docs.phantom.com/phantom-cli): Terminal wallet for the same tools as the MCP server
+- [CLI installation](https://docs.phantom.com/phantom-cli/installation): Install `@phantom/cli`
+- [CLI commands](https://docs.phantom.com/phantom-cli/commands): Command reference, including command-specific flags
+- [Phantom Cash](https://docs.phantom.com/cash): Phantom Cash developer overview

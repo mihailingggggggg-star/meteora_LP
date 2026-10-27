@@ -1,0 +1,22 @@
+[Unit]
+Description=Meteora Terminal — торговый движок (API :8787)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meteora
+Group=meteora
+WorkingDirectory=/opt/meteora-terminal/apps/engine
+EnvironmentFile=/opt/meteora-terminal/.env
+ExecStart=/usr/bin/npx tsx src/index.ts
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=15
+StandardOutput=append:/opt/meteora-terminal/.run/engine.log
+StandardError=append:/opt/meteora-terminal/.run/engine.log
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
