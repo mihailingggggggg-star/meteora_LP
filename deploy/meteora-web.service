@@ -7,15 +7,16 @@ Wants=network-online.target
 Type=simple
 User=meteora
 Group=meteora
+Environment=HOME=/opt/meteora-terminal/.run
 WorkingDirectory=/opt/meteora-terminal/apps/web
 EnvironmentFile=/opt/meteora-terminal/.env
 Environment=NODE_ENV=production
 Environment=PORT=3000
-Environment=ENGINE_URL=http://127.0.0.1:8787
 Environment=HOSTNAME=127.0.0.1
 ExecStart=/usr/bin/npx next start -p 3000
 Restart=always
 RestartSec=3
+Environment=NEXT_TELEMETRY_DISABLED=1
 StandardOutput=append:/opt/meteora-terminal/.run/web.log
 StandardError=append:/opt/meteora-terminal/.run/web.log
 
@@ -31,11 +32,8 @@ ProtectClock=true
 ProtectHostname=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
-RestrictNamespaces=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
 ReadWritePaths=/opt/meteora-terminal/apps/web/.next /opt/meteora-terminal/.run
 UMask=0077
 
