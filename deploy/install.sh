@@ -67,8 +67,12 @@ id meteora >/dev/null 2>&1 || useradd -r -m -d /opt/meteora-terminal -s /bin/bas
 if [[ "$SRC" != "$DST" ]]; then
   log "копирую проект в $DST"
   mkdir -p "$DST"
+  # НЕ перезаписываем боевые .env и базу — иначе каждый деплой из git/архива
+  # стирал бы engine.db и менял секреты (AUTH_SECRET, пароль админа)
   rsync -a --delete \
-    --exclude node_modules --exclude .git --exclude .run --exclude "data/*.db-shm" --exclude "data/*.db-wal" \
+    --exclude node_modules --exclude .git --exclude .run \
+    --exclude ".env" --exclude ".env.local" \
+    --exclude "data/*.db" --exclude "data/*.db-shm" --exclude "data/*.db-wal" \
     "$SRC"/ "$DST"/
 fi
 mkdir -p "$DST/.run" "$DST/data" "$DST/journal"
