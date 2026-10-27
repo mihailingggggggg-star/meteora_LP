@@ -89,6 +89,9 @@ done
 if (( ${#missing[@]} )); then die "в .env не заполнено: ${missing[*]}"; fi
 
 # ── 3. порты: берём свободные, чтобы не столкнуться с другими ботами на сервере
+# свои сервисы гасим, иначе они сами занимают порт и установщик уезжает на соседний
+systemctl stop meteora-web meteora-engine >/dev/null 2>&1 || true
+sleep 1
 port_busy() { ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1$"; }
 WEB_PORT="$(grep -E '^WEB_PORT=' "$DST/.env" | head -1 | cut -d= -f2- || true)"; WEB_PORT="${WEB_PORT:-3000}"
 ENGINE_PORT="$(grep -E '^ENGINE_PORT=' "$DST/.env" | head -1 | cut -d= -f2- || true)"; ENGINE_PORT="${ENGINE_PORT:-8787}"
@@ -150,11 +153,20 @@ systemctl restart meteora-engine meteora-web
 log "веб-сервер и HTTPS: https://$HOST"
 if systemctl is-active --quiet caddy || [[ -f /etc/caddy/Caddyfile ]]; then
   CF=/etc/caddy/Caddyfile
-  [[ -f "$CF" ]] && cp "$CF" "$CF.bak.$(date +%s)"
-  if ! grep -q "$HOST" "$CF" 2>/dev/null; then
-    cat >> "$CF" <<EOF
-
-# ── meteora-terminal ──
+  touch "$CF"
+  cp "$CF" "$CF.bak.$(date +%s)"
+  BEGIN="# ── meteora-terminal begin ──"
+  END="# ── meteora-terminal end ──"
+  # вырезаем прежний блок (в т.ч. формат первой версии, который дописывался в конец файла)
+  if grep -q "# ── meteora-terminal ──" "$CF"; then
+    sed -i '/# ── meteora-terminal ──/,$d' "$CF"
+  fi
+  if grep -q "meteora-terminal begin" "$CF"; then
+    awk -v b="$BEGIN" -v e="$END" 'index($0,b){skip=1} !skip{print} index($0,e){skip=0}' "$CF" > "$CF.tmp" \
+      && mv "$CF.tmp" "$CF"
+  fi
+  cat >> "$CF" <<EOF
+$BEGIN
 $HOST {
     encode gzip zstd
     reverse_proxy 127.0.0.1:$WEB_PORT
@@ -164,8 +176,8 @@ $HOST {
         Referrer-Policy "strict-origin-when-cross-origin"
     }
 }
+$END
 EOF
-  fi
   caddy validate --config "$CF" >/dev/null 2>&1 || die "Caddyfile невалиден, откатите: cp $CF.bak.* $CF"
   systemctl reload caddy || systemctl restart caddy
 elif systemctl is-active --quiet nginx; then
