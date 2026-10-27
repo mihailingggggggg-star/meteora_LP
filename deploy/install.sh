@@ -36,22 +36,25 @@ if command -v node >/dev/null 2>&1 && [[ "$(node -v | cut -d. -f1 | tr -d v)" -g
   NODE_BIN="$(command -v node)"
   log "node $(node -v) уже есть — использую его"
 else
-  NODE_VER="v22.11.0"
+  NODE_VER="v24.22.1"
   case "$(uname -m)" in
     aarch64|arm64) NARCH="arm64" ;;
     *) NARCH="x64" ;;
   esac
-  if [[ ! -x /opt/node22/bin/node ]]; then
+  if [[ ! -x /opt/node24/bin/node ]]; then
     log "node $NODE_VER в /opt/node22 (системный nodejs не трогаю)"
-    mkdir -p /opt/node22
+    mkdir -p /opt/node24
     curl -fsSL "https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-$NARCH.tar.xz" -o /tmp/node.tar.xz \
       || die "не скачался node — проверьте интернет на сервере"
-    tar -xJf /tmp/node.tar.xz -C /opt/node22 --strip-components=1
+    tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1
     rm -f /tmp/node.tar.xz
   fi
-  NODE_BIN="/opt/node22/bin/node"
-  NODE_DIR="/opt/node22/bin"
+  NODE_BIN="/opt/node24/bin/node"
+  NODE_DIR="/opt/node24/bin"
   "$NODE_BIN" -v >/dev/null || die "node не запускается"
+  # движку нужен встроенный модуль node:sqlite (в 22.x он за флагом, в 24.x доступен сразу)
+  "$NODE_BIN" -e "require('node:sqlite')" >/dev/null 2>&1 || die "в этом node нет node:sqlite — нужна версия 24+"
+  rm -rf /opt/node22 2>/dev/null || true
 fi
 NPX_BIN="$(dirname "$NODE_BIN")/npx"
 [[ -x "$NPX_BIN" ]] || NPX_BIN="$(dirname "$NODE_BIN")/npm"
