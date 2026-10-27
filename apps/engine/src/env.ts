@@ -20,7 +20,11 @@ function loadEnvFiles() {
 }
 loadEnvFiles();
 
-const num = (v: string | undefined, def: number) => (v == null || v === "" ? def : Number(v));
+const num = (v: string | undefined, def: number) => {
+  if (v == null || v.trim() === "") return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def; // «24MIN_HOLDERS=300» и прочий мусор не должен превращаться в NaN
+};
 const bool = (v: string | undefined, def: boolean) => (v == null ? def : v === "true");
 
 export const env = {
@@ -65,7 +69,8 @@ export const env = {
     earlyExitTurnover: num(process.env.EARLY_EXIT_TURNOVER, 0.8),
     earlyExitAtrPct: num(process.env.EARLY_EXIT_ATR_PCT, 3.0),
     profitTakePct: num(process.env.PROFIT_TAKE_PCT, 20),
-    maxPositions: num(process.env.MAX_POSITIONS, 1),
+    // жёсткий предел: одновременно не больше 3 позиций (каждая — своя часть депозита)
+    maxPositions: Math.min(3, num(process.env.MAX_POSITIONS, 3)),
     maxPositionsLarge: num(process.env.MAX_POSITIONS_LARGE, 5),
     diversifyFromUsd: num(process.env.DIVERSIFY_FROM_USD, 10_000),
 
@@ -79,6 +84,8 @@ export const env = {
         : "spot") as "spot" | "curve" | "uniform",
     claimIntervalHours: num(process.env.CLAIM_INTERVAL_HOURS, 2),
     maxHoldHours: num(process.env.MAX_HOLD_HOURS, 24),
+    // сколько ждём возврата цены в диапазон, прежде чем ребалансировать
+    rangeBreakMinutes: num(process.env.RANGE_BREAK_MINUTES, 10),
     claimThresholdPct: num(process.env.CLAIM_THRESHOLD_PCT, 0.5),
     scanIntervalSeconds: num(process.env.SCAN_INTERVAL_SECONDS, 45),
     exitCostPct: num(process.env.FRICTION_PCT, 0.15),

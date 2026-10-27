@@ -9,6 +9,7 @@ import { buildVolumeProfile, priceStats } from "./math.js";
 import {
   buildBalancedPlan,
   computeAtr,
+  decideRangeAction,
   positionValue,
   volumeShareInRange,
   type StrategyPlan,
@@ -33,6 +34,10 @@ type RtPos = {
   frictionPaid: number;
   /** объём последней 30-минутной свечи (USD) */
   vol30m: number;
+  /** когда цена впервые вышла за границу сетки (0 — внутри диапазона) */
+  outSince: number;
+  /** позиция отработала срок и ждёт удачного момента для ротации */
+  rotatePending: boolean;
   entryPrice: number;
   /** средняя цена входа токеновой части относительно центра сетки */
   avgEntryRel: number;
@@ -138,6 +143,7 @@ export class Engine {
     scanIntervalSeconds: number;
     claimIntervalHours: number;
     maxHoldHours: number;
+    rangeBreakMinutes: number;
   } = {
     maxAtrPct: env.strategy.maxAtrPct,
     minTurnover: env.strategy.minTurnover,
@@ -163,13 +169,15 @@ export class Engine {
     scanIntervalSeconds: env.strategy.scanIntervalSeconds,
     claimIntervalHours: env.strategy.claimIntervalHours ?? 2,
     maxHoldHours: env.strategy.maxHoldHours,
+    rangeBreakMinutes: env.strategy.rangeBreakMinutes ?? 10,
   };
 
   /** Сколько позиций держим одновременно: 1 до $10k, дальше — диверсификация. */
   get slots(): number {
-    const base = this.settings.maxPositions;
+    // жёсткий предел: 3 позиции одновременно, независимо от депозита
+    const base = Math.min(3, this.settings.maxPositions);
     if (this.deposit >= env.strategy.diversifyFromUsd) {
-      return Math.max(base, env.strategy.maxPositionsLarge);
+      return Math.min(3, Math.max(base, env.strategy.maxPositionsLarge));
     }
     return base;
   }
@@ -184,7 +192,20 @@ export class Engine {
       this.nextMilestone = saved.nextMilestone ?? this.deposit * 1.1;
     }
     const savedSettings = getSetting<any>("engine.settings", null);
-    if (savedSettings) this.settings = { ...this.settings, ...savedSettings };
+    if (savedSettings) {
+      const merged: any = { ...this.settings, ...savedSettings };
+      // жёсткий предел: не больше 3 позиций, даже если в базе сохранено старое значение
+      const savedSlots = Number(merged.maxPositions);
+      merged.maxPositions = Number.isFinite(savedSlots) ? Math.min(3, Math.max(1, savedSlots)) : 3;
+      merged.maxHoldHours = Number(merged.maxHoldHours) || env.strategy.maxHoldHours || 24;
+      merged.rangeBreakMinutes = Number(merged.rangeBreakMinutes) || env.strategy.rangeBreakMinutes || 10;
+      this.settings = merged;
+      // миграция: раньше по умолчанию был 1 слот — с новой логикой ротации нужно до 3
+      if (this.settings.maxPositions < 2) {
+        this.settings.maxPositions = 3;
+        journal("BOOT", "миграция: слотов 1 → 3 (ротация на резервной части депозита)");
+      }
+    }
     this.restore();
     this.reconcile();
     this.reconcileCash();
@@ -271,6 +292,8 @@ export class Engine {
           initialCapital: row.initial_capital ?? row.capital,
           frictionPaid: row.friction_usd ?? 0,
           vol30m: 0,
+          outSince: 0,
+          rotatePending: false,
           entryPrice: row.entry_price,
           avgEntryRel: 1,
           rangePct: row.range_pct ?? 0.025,
@@ -829,6 +852,8 @@ export class Engine {
       initialCapital: capital,
       frictionPaid: 0,
       vol30m: 0,
+      outSince: 0,
+      rotatePending: false,
       entryPrice,
       avgEntryRel: 1,
       rangePct: plan.rangePct,
@@ -1138,18 +1163,54 @@ export class Engine {
     }
 
     // ── лимит времени в сделке
-    if (this.settings.maxHoldHours > 0 && now - pos.openedAt > this.settings.maxHoldHours * 3600_000) {
-      journal("EXIT_TIME", `pos#${pos.id} отработала ${this.settings.maxHoldHours}ч → ротация в другой пул`);
-      await this.closePositionById(pos.id, "EXIT_TIME", price);
-      return;
+    // ── срок отработан: НЕ закрываем принудительно, ждём удачного момента
+    // (цена вернулась к центру — фиксируем, или пробила диапазон вниз — выходим)
+    if (
+      this.settings.maxHoldHours > 0 &&
+      now - pos.openedAt > this.settings.maxHoldHours * 3600_000 &&
+      !pos.rotatePending
+    ) {
+      pos.rotatePending = true;
+      journal(
+        "ROTATE_WAIT",
+        `pos#${pos.id} отработала ${this.settings.maxHoldHours}ч → ждём баланса или пробоя вниз; слот не освобождаем принудительно`,
+      );
     }
 
-    // ── выход за границу сетки → ребаланс
+    // ── выход за границу сетки: сначала ждём 10 минут, ребаланс только если не вернулась
     if (now - pos.openedAt < 60_000) return;
-    const out = rel > 1 + pos.rangePct || rel < 1 - pos.rangePct;
-    pos.breakChecks = out ? pos.breakChecks + 1 : 0;
-    if (pos.breakChecks >= 2) {
+    const graceMs = Math.max(1, this.settings.rangeBreakMinutes) * 60_000;
+    const action = decideRangeAction({
+      rel,
+      rangePct: pos.rangePct,
+      outSince: pos.outSince,
+      now,
+      graceMs,
+      rotatePending: pos.rotatePending,
+    });
+
+    if (action === "mark_out") {
+      pos.outSince = now;
+      journal(
+        "RANGE_OUT",
+        `pos#${pos.id} цена вышла за границу (${((rel - 1) * 100).toFixed(2)}%) → ждём ${this.settings.rangeBreakMinutes} мин`,
+      );
+    } else if (action === "back_in") {
+      journal(
+        "RANGE_BACK",
+        `pos#${pos.id} цена вернулась в диапазон за ${Math.round((now - pos.outSince) / 1000)}с — ребаланс не нужен`,
+      );
+      pos.outSince = 0;
+    } else if (action === "rebalance") {
       await this.rebalance(pos, price);
+      return;
+    } else if (action === "close_rotate") {
+      journal("EXIT_ROTATE", `pos#${pos.id} цена вернулась к центру — фиксируем и освобождаем слот`);
+      await this.closePositionById(pos.id, "EXIT_ROTATE", price);
+      return;
+    } else if (action === "close_range_down") {
+      journal("EXIT_RANGE_DOWN", `pos#${pos.id} пробой вниз держится ${this.settings.rangeBreakMinutes} мин → выходим`);
+      await this.closePositionById(pos.id, "EXIT_RANGE_DOWN", price);
       return;
     }
 
@@ -1556,6 +1617,7 @@ export class Engine {
       poolUsdInGrid: p.poolUsdInGrid,
       frictionPct: this.settings.frictionPct,
       maxHoldHours: this.settings.maxHoldHours,
+      rangeBreakMinutes: this.settings.rangeBreakMinutes,
       zones: { z1: { lowRel: -p.rangePct, highRel: p.rangePct } },
       bins: p.bins,
       openedAt: p.openedAt,

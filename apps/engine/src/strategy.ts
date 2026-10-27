@@ -289,3 +289,43 @@ export function rebalance(
   const frictionUsd = value * (frictionPct / 100);
   return { capital: Math.max(0, value - frictionUsd), frictionUsd };
 }
+
+/** Что делать с позицией, вышедшей за границу сетки. */
+export type RangeAction =
+  | "none"
+  | "mark_out"
+  | "back_in"
+  | "hold"
+  | "rebalance"
+  | "close_rotate"
+  | "close_range_down";
+
+/**
+ * Единое правило выхода/ребаланса:
+ *  • цена вышла за границу → помечаем время и ЖДЁМ graceMs (по умолчанию 10 минут);
+ *  • вернулась внутрь → ничего не делаем;
+ *  • не вернулась за graceMs → ребаланс;
+ *  • позиция «ждёт ротации» (отработала срок) → закрываем только по возврату к центру (rel ≥ 1)
+ *    или по пробою вниз, который держится дольше graceMs.
+ */
+export function decideRangeAction(opts: {
+  rel: number;
+  rangePct: number;
+  outSince: number;
+  now: number;
+  graceMs: number;
+  rotatePending: boolean;
+}): RangeAction {
+  const { rel, rangePct, outSince, now, graceMs, rotatePending } = opts;
+  const out = rel > 1 + rangePct || rel < 1 - rangePct;
+  const expired = outSince > 0 && now - outSince >= graceMs;
+
+  if (rotatePending) {
+    if (rel >= 1) return "close_rotate";
+    if (out && rel < 1 - rangePct && expired) return "close_range_down";
+  }
+
+  if (!out) return outSince > 0 ? "back_in" : "none";
+  if (outSince === 0) return "mark_out";
+  return expired ? "rebalance" : "hold";
+}

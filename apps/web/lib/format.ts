@@ -82,25 +82,27 @@ export const reasonLabel: Record<string, string> = {
   EXIT_VOLATILITY: "Рост волатильности",
   EXIT_FLOW: "Пул остыл",
   EXIT_TIME: "Отработала срок",
+  EXIT_RANGE_DOWN: "Пробой диапазона вниз",
   MANUAL: "Вручную",
   DUPLICATE: "Дубликат (снят)",
   // старая логика (в истории)
   STOP: "Стоп",
   EXIT_UP: "Выход вверх",
-  EXIT_ROTATE: "Ротация",
+  EXIT_ROTATE: "Ротация по балансу",
 };
 
 export const reasonTone: Record<string, "mint" | "danger" | "accent" | "neutral"> = {
   CONSECUTIVE_LOSS: "danger",
   MAX_REBALANCES: "accent",
   EXIT_VOLATILITY: "accent",
+  EXIT_RANGE_DOWN: "danger",
+  EXIT_ROTATE: "mint",
   EXIT_FLOW: "accent",
   EXIT_TIME: "neutral",
   MANUAL: "neutral",
   DUPLICATE: "neutral",
   STOP: "danger",
   EXIT_UP: "mint",
-  EXIT_ROTATE: "neutral",
 };
 
 /** Оборот пула: суточный объём / TVL — «сколько раз TVL обернулся за сутки». */
