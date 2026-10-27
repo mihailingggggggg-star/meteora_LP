@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import {
   ArrowUpRight,
   ArrowDownRight,
+  Download,
   Zap,
   Layers,
   ScanLine,
@@ -340,9 +341,27 @@ export default function DashboardPage() {
             <Card>
               <div className="flex items-center justify-between">
                 <div className="text-[13px] font-medium">Последние действия</div>
-                <Link href="/journal" className="text-[11px] text-muted hover:text-ink">
-                  Весь журнал
-                </Link>
+                <a
+                  href="/api/engine/journal/download"
+                  className="flex items-center gap-1 text-[11px] text-muted transition hover:text-ink"
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    try {
+                      const res = await fetch("/api/engine/journal/download", { cache: "no-store" });
+                      const text = await res.text();
+                      const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `esmar-journal-${new Date().toISOString().slice(0, 10)}.md`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    } catch {
+                      toast.error("Не удалось скачать журнал");
+                    }
+                  }}
+                >
+                  <Download className="h-3 w-3" /> Скачать журнал
+                </a>
               </div>
               <div className="mt-3 space-y-1">
                 {(state?.logs ?? []).slice(0, 8).map((l: any, i: number) => {

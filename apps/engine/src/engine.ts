@@ -1,6 +1,6 @@
 import { env } from "./env.js";
 import { db, event, getSetting, setSetting } from "./db.js";
-import { journal, readJournal, type JournalType } from "./journal.js";
+import { journal, journalConfig, journalSettings, readJournal, type JournalType } from "./journal.js";
 import { fetchPools, fetchPool, isSolPair, splitPair, type Pool } from "./meteora.js";
 import { fetchCandles, fetchGeckoPool, fetchMeteoraCandles, jupiterQuote, type Candle } from "./market.js";
 import { readBinLiquidity } from "./chain.js";
@@ -108,6 +108,8 @@ export class Engine {
   cash = env.demoDeposit;
   positions: RtPos[] = [];
   banked = 0;
+  /** максимум капитала за всё время — база для просадки */
+  peakEquity = 0;
   nextMilestone = env.demoDeposit * 1.1;
 
   lastScanAt = 0;
@@ -120,6 +122,7 @@ export class Engine {
   analysisCache = new Map<string, { at: number; price: number; vol24: number; deposit: number; plan: StrategyPlan }>();
   private atrSeen = new Map<string, { at: number; atr: number }>();
   private lastSnapshotAt = 0;
+  private lastSnapAt = 0;
   private scoreSeen = new Map<string, { score: number; at: number }>();
   private lastSummaryAt = 0;
   private lastSkipAt = 0;
@@ -210,9 +213,58 @@ export class Engine {
     this.reconcile();
     this.reconcileCash();
     this.seedLogs();
+    journalConfig({
+      mode: this.mode,
+      deposit: this.deposit,
+      slots: this.slots,
+      maxHoldHours: this.settings.maxHoldHours,
+      rangeBreakMinutes: this.settings.rangeBreakMinutes,
+      strategy: {
+        rangeAtrMult: this.settings.rangeAtrMult,
+        maxRangePct: this.settings.maxRangePct,
+        budgetPct: this.settings.budgetPct,
+        frictionPct: this.settings.frictionPct,
+        maxLossPerTradePct: this.settings.maxLossPerTradePct,
+        maxDailyLossPct: this.settings.maxDailyLossPct,
+        maxRebalancesPerDay: this.settings.maxRebalancesPerDay,
+        consecutiveLossStop: this.settings.consecutiveLossStop,
+        claimIntervalHours: this.settings.claimIntervalHours,
+        profitTakePct: this.settings.profitTakePct,
+        targetDailyPct: this.settings.targetDailyPct,
+      },
+      filters: {
+        maxAtrPct: this.settings.maxAtrPct,
+        minTurnover: this.settings.minTurnover,
+        minPoolTvl: this.settings.minPoolTvl,
+        minTxns24h: this.settings.minTxns24h,
+        minHolders: this.settings.minHolders,
+      },
+      settings: this.settings,
+    });
+    journal(
+      "CONFIG",
+      "параметры при старте",
+      {
+        mode: this.mode,
+        deposit: this.deposit,
+        slots: this.slots,
+        cash: this.cash,
+        banked: this.banked,
+        maxHoldHours: this.settings.maxHoldHours,
+        rangeBreakMinutes: this.settings.rangeBreakMinutes,
+        maxRebalancesPerDay: this.settings.maxRebalancesPerDay,
+        consecutiveLossStop: this.settings.consecutiveLossStop,
+        maxDailyLossPct: this.settings.maxDailyLossPct,
+        maxLossPerTradePct: this.settings.maxLossPerTradePct,
+        maxAtrPct: this.settings.maxAtrPct,
+        minTurnover: this.settings.minTurnover,
+        claimIntervalHours: this.settings.claimIntervalHours,
+        profitTakePct: this.settings.profitTakePct,
+      },
+    );
     journal(
       "BOOT",
-      `движок запущен mode=${this.mode} deposit=$${this.deposit.toFixed(2)} стратегия=grid±${(this.settings.maxRangePct / 2).toFixed(1)}% ребаланс=${this.settings.maxRebalancesPerDay}/сут`,
+      `движок запущен mode=${this.mode} deposit=$${this.deposit.toFixed(2)} слотов=${this.slots} сетка±${(this.settings.maxRangePct / 2).toFixed(1)}% ребаланс=${this.settings.maxRebalancesPerDay}/сут ожидание=${this.settings.rangeBreakMinutes}мин`,
     );
   }
 
@@ -517,7 +569,12 @@ export class Engine {
       this.halted = true;
       this.haltReason = "дневной лимит убытка";
       this.persist();
-      journal("HALT", `дневной убыток $${pnl.toFixed(2)} ≤ лимита −$${limit.toFixed(2)} → новые входы остановлены до завтра`);
+      journal("HALT", `дневной убыток $${pnl.toFixed(2)} ≤ лимита −$${limit.toFixed(2)} → новые входы остановлены до завтра`, {
+        dayPnl: pnl,
+        limit,
+        deposit: this.deposit,
+        maxDailyLossPct: this.settings.maxDailyLossPct,
+      });
     }
   }
 
@@ -895,6 +952,22 @@ export class Engine {
     journal(
       "ENTER",
       `pos#${id} ${plan.pool.name} C=$${capital.toFixed(0)} 50/50 диапазон ±${(plan.rangePct * 100).toFixed(1)}% (концентрация ×${Math.round(plan.concentration)}) прогноз ${plan.expectedDailyPct.toFixed(2)}%/сут ATR ${plan.atrPct.toFixed(2)}%`,
+      {
+        position: id,
+        pool: plan.pool.name,
+        capital,
+        price: entryPrice,
+        rangePct: plan.rangePct,
+        atrPct: plan.atrPct,
+        predictedDailyPct: plan.expectedDailyPct,
+        poolTvl: plan.pool.tvl,
+        vol24: plan.pool.vol24,
+        binStep: plan.pool.binStep,
+        baseFeePct: plan.pool.baseFeePct,
+        dynamicFeePct: plan.pool.dynamicFeePct,
+        slotsUsed: this.positions.length,
+        cash: this.cash,
+      },
     );
     event(id, "ENTER", { capital, rangePct: plan.rangePct, atr: plan.atrPct, bins: bins.length });
 
@@ -958,16 +1031,40 @@ export class Engine {
     journal(
       "REBALANCE",
       `pos#${pos.id} ребаланс #${pos.rebalances}: цена ${((rel - 1) * 100).toFixed(2)}% → новая сетка ±${(pos.rangePct * 100).toFixed(1)}% от ${price.toFixed(8)}, капитал $${oldCapital.toFixed(0)}→$${pos.capital.toFixed(0)} (friction $${frictionUsd.toFixed(2)}), серия убытков ${pos.consecutiveLosses}`,
+      {
+        position: pos.id,
+        price,
+        rel,
+        fromCapital: oldCapital,
+        toCapital: pos.capital,
+        frictionUsd,
+        rebalances: pos.rebalances,
+        consecutiveLosses: pos.consecutiveLosses,
+        outMinutes: pos.outSince ? (Date.now() - pos.outSince) / 60_000 : null,
+        lost,
+      },
     );
 
     if (pos.consecutiveLosses >= this.settings.consecutiveLossStop) {
-      journal("STOP", `pos#${pos.id} ${pos.consecutiveLosses} убыточных ребаланса подряд → полный выход и смена пула`);
+      journal("STOP", `pos#${pos.id} ${pos.consecutiveLosses} убыточных ребаланса подряд → полный выход и смена пула`, {
+        position: pos.id,
+        consecutiveLosses: pos.consecutiveLosses,
+        stopAfter: this.settings.consecutiveLossStop,
+        price,
+        rel,
+      });
       this.blockedPools.set(pos.pool.address, Date.now() + 30 * 60_000);
       await this.closePositionById(pos.id, "CONSECUTIVE_LOSS", price);
       return;
     }
     if (pos.rebalances >= this.settings.maxRebalancesPerDay) {
-      journal("STOP", `pos#${pos.id} лимит ребалансов ${this.settings.maxRebalancesPerDay}/сут → выход`);
+      journal("STOP", `pos#${pos.id} лимит ребалансов ${this.settings.maxRebalancesPerDay}/сут → выход`, {
+        position: pos.id,
+        rebalances: pos.rebalances,
+        limit: this.settings.maxRebalancesPerDay,
+        price,
+        rel,
+      });
       this.blockedPools.set(pos.pool.address, Date.now() + 60 * 60_000);
       await this.closePositionById(pos.id, "MAX_REBALANCES", price);
     }
@@ -1159,7 +1256,12 @@ export class Engine {
       pos.claimedAt = now;
       db.prepare(`UPDATE positions SET fees_usd=?, claimed_usd=?, last_claim_at=? WHERE id=?`).run(0, pos.feesClaimed, now, pos.id);
       event(pos.id, "CLAIM", { claimed });
-      journal("CLAIM", `pos#${pos.id} комиссии $${claimed.toFixed(2)} → SOL`);
+      journal("CLAIM", `pos#${pos.id} комиссии $${claimed.toFixed(2)} → SOL`, {
+        position: pos.id,
+        claimed,
+        totalClaimed: pos.feesClaimed,
+        cash: this.cash,
+      });
     }
 
     // ── лимит времени в сделке
@@ -1194,6 +1296,7 @@ export class Engine {
       journal(
         "RANGE_OUT",
         `pos#${pos.id} цена вышла за границу (${((rel - 1) * 100).toFixed(2)}%) → ждём ${this.settings.rangeBreakMinutes} мин`,
+        { position: pos.id, price, rel, rangePct: pos.rangePct, outMinutes: 0 },
       );
     } else if (action === "back_in") {
       journal(
@@ -1205,11 +1308,21 @@ export class Engine {
       await this.rebalance(pos, price);
       return;
     } else if (action === "close_rotate") {
-      journal("EXIT_ROTATE", `pos#${pos.id} цена вернулась к центру — фиксируем и освобождаем слот`);
+      journal("EXIT_ROTATE", `pos#${pos.id} цена вернулась к центру — фиксируем и освобождаем слот`, {
+        position: pos.id,
+        price,
+        rel,
+        outMinutes: pos.outSince ? (now - pos.outSince) / 60_000 : 0,
+      });
       await this.closePositionById(pos.id, "EXIT_ROTATE", price);
       return;
     } else if (action === "close_range_down") {
-      journal("EXIT_RANGE_DOWN", `pos#${pos.id} пробой вниз держится ${this.settings.rangeBreakMinutes} мин → выходим`);
+      journal("EXIT_RANGE_DOWN", `pos#${pos.id} пробой вниз держится ${this.settings.rangeBreakMinutes} мин → выходим`, {
+        position: pos.id,
+        price,
+        rel,
+        outMinutes: pos.outSince ? (now - pos.outSince) / 60_000 : 0,
+      });
       await this.closePositionById(pos.id, "EXIT_RANGE_DOWN", price);
       return;
     }
@@ -1241,6 +1354,37 @@ export class Engine {
       } catch {
         /* пропускаем проверку */
       }
+    }
+
+    // ── срез состояния раз в 5 минут: по нему видно, как менялся капитал и просадка
+    if (now - this.lastSnapAt > 5 * 60_000) {
+      this.lastSnapAt = now;
+      const eq = this.getEquity();
+      if (eq.equity > this.peakEquity) this.peakEquity = eq.equity;
+      const dd = this.peakEquity > 0 ? ((eq.equity - this.peakEquity) / this.peakEquity) * 100 : 0;
+      const openPnl = this.positions.reduce((sum, p) => sum + (this.positionDto(p)?.pnl ?? 0), 0);
+      journal("SNAP", `equity=$${eq.equity.toFixed(2)} cash=$${eq.cash.toFixed(2)} открытых=${this.positions.length} pnl_открытых=$${openPnl.toFixed(2)} dd=${dd.toFixed(2)}%`, {
+        equity: eq.equity,
+        cash: eq.cash,
+        inPositions: eq.inPositions,
+        pendingFees: eq.pendingFees,
+        banked: eq.banked,
+        peakEquity: this.peakEquity,
+        drawdownPct: dd,
+        openPnl,
+        deposit: this.deposit,
+        totalPnl: eq.equity - this.deposit,
+        positions: this.positions.map((p) => ({
+          id: p.id,
+          pool: p.pool.name,
+          price: p.lastPrice,
+          rel: p.lastPrice / p.entryPrice,
+          pnl: this.positionDto(p)?.pnl ?? 0,
+          fees: p.feesAccrued + p.feesClaimed,
+          rebalances: p.rebalances,
+          rotatePending: p.rotatePending,
+        })),
+      });
     }
 
     // ── сводка раз в 30 минут
@@ -1408,6 +1552,26 @@ export class Engine {
     journal(
       reason as JournalType,
       `pos#${pos.id} ${pos.pool.name} pnl=$${pnl.toFixed(2)} (${pnlPct.toFixed(2)}% депозита) fees=$${(pos.feesAccrued + pos.feesClaimed).toFixed(2)} ребалансов ${pos.rebalances} slip=${(slipPct * 100).toFixed(2)}% (${slipSource})`,
+      {
+        position: pos.id,
+        pool: pos.pool.name,
+        reason,
+        price,
+        entryPrice: pos.entryPrice,
+        rel: price / pos.entryPrice,
+        pnl,
+        pnlPct,
+        feesAccrued: pos.feesAccrued,
+        feesClaimed: pos.feesClaimed,
+        capital: pos.capital,
+        initialCapital: pos.initialCapital,
+        frictionPaid: pos.frictionPaid,
+        rebalances: pos.rebalances,
+        hours,
+        exitSlipPct: slipPct * 100,
+        slipSource,
+        equity: this.getEquity().equity,
+      },
     );
     this.log(reason, `pos#${pos.id} закрыта: $${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)`);
 
@@ -1462,6 +1626,16 @@ export class Engine {
       .prepare(`SELECT COALESCE(SUM(fees_usd),0) + COALESCE(SUM(claimed_usd),0) AS f FROM positions WHERE mode = ?`)
       .get(this.mode) as any;
     return Number(row?.f ?? 0);
+  }
+
+  /** Обновление настроек: пишем в журнал только изменённые параметры. */
+  applySettings(patch: Record<string, unknown>) {
+    const prev = { ...this.settings } as Record<string, unknown>;
+    const next = { ...prev, ...patch } as Record<string, unknown>;
+    this.settings = next as typeof this.settings;
+    journalSettings(prev, next);
+    setSetting("engine.settings", this.settings);
+    return { changed: Object.keys(patch), settings: this.settings };
   }
 
   /** PnL за период = изменение капитала с начала периода (а не сумма сделок). */

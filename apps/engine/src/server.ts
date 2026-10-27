@@ -4,7 +4,7 @@ import { engine, swapWatcher } from "./engine.js";
 import { swapsFor } from "./swaps.js";
 import { solanaStream } from "./stream.js";
 import { db } from "./db.js";
-import { journal, readJournal } from "./journal.js";
+import { dayKey, journal, journalDays, readJournal, readJournalFull } from "./journal.js";
 import { event } from "./db.js";
 import { env } from "./env.js";
 
@@ -468,13 +468,20 @@ export function startServer() {
       }
       if (p === "/api/settings" && req.method === "POST") {
         const body = await readBody(req);
-        engine.settings = { ...engine.settings, ...body };
-        db.prepare(
-          `INSERT INTO settings (key, value) VALUES ('engine.settings', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-        ).run(JSON.stringify(engine.settings));
-        journal("BOOT", `настройки обновлены: ${Object.keys(body).join(", ")}`);
+        engine.applySettings(body);
         return json(res, 200, engine.state());
       }
+      if (p === "/api/journal/download") {
+        const day = q.get("date") || dayKey();
+        const text = readJournalFull(day);
+        res.writeHead(200, {
+          "content-type": "text/markdown; charset=utf-8",
+          "content-disposition": `attachment; filename="esmar-journal-${day}.md"`,
+          "cache-control": "no-store",
+        });
+        return res.end(text || `# Журнал ${day}\n\nзаписей нет`);
+      }
+      if (p === "/api/journal/days") return json(res, 200, { days: journalDays(30) });
       return json(res, 404, { error: "not found", path: p });
     } catch (err: any) {
       journal("ERROR", `api ${p}: ${err?.message ?? err}`);

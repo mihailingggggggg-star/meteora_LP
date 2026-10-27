@@ -8,7 +8,6 @@ import {
   Radar,
   ArrowLeftRight,
   PieChart,
-  NotebookText,
   Settings,
   LogOut,
   Bell,
@@ -35,7 +34,6 @@ const MOBILE_NAV = [
 const MORE_NAV = [
   { href: "/screener", icon: Radar, label: "Скринер" },
   { href: "/swaps", icon: ArrowLeftRight, label: "Свапы" },
-  { href: "/journal", icon: NotebookText, label: "Журнал" },
 ];
 
 const NAV = [
@@ -44,7 +42,7 @@ const NAV = [
   { href: "/screener", icon: Radar, label: "Скринер" },
   { href: "/swaps", icon: ArrowLeftRight, label: "Свапы" },
   { href: "/analytics", icon: PieChart, label: "Аналитика" },
-  { href: "/journal", icon: NotebookText, label: "Журнал" },
+
 ];
 
 function Logo({ size = 40 }: { size?: number }) {

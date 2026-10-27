@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Save, ShieldAlert, Wallet, Server, Target, Gauge, Radar, Split, Repeat } from "lucide-react";
+import { FileText, Save, ShieldAlert, Wallet, Server, Target, Gauge, Radar, Split, Repeat } from "lucide-react";
 import { Button, Card, Chip, FadeIn, Muted } from "@/components/ui/kit";
 import { ConnectWallet } from "@/components/wallet/connect-wallet";
-import { enginePost, useEngineState } from "@/lib/api";
+import { engineGet, enginePost, useEngineState } from "@/lib/api";
 import { pctPlain, usd } from "@/lib/format";
 import { toast } from "sonner";
 
@@ -66,6 +66,39 @@ export default function SettingsPage() {
   const { state } = useEngineState();
   const [form, setForm] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  const [days, setDays] = useState<string[]>([]);
+  const [journalDay, setJournalDay] = useState<string>("");
+
+  useEffect(() => {
+    engineGet<any>("/journal/days")
+      .then((d) => {
+        const list: string[] = d?.days ?? [];
+        setDays(list);
+        if (!journalDay && list.length) setJournalDay(list[0]);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const downloadJournal = async () => {
+    try {
+      const res = await fetch(`/api/engine/journal/download${journalDay ? `?date=${journalDay}` : ""}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `esmar-journal-${journalDay || "today"}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Журнал скачан");
+    } catch {
+      toast.error("Не удалось скачать журнал");
+    }
+  };
 
   useEffect(() => {
     if (state?.settings && !form) setForm(state.settings);
@@ -482,6 +515,39 @@ export default function SettingsPage() {
               >
                 Сбросить демо-контур
               </Button>
+            </Card>
+          </FadeIn>
+
+          <FadeIn delay={0.06}>
+            <Card>
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-accent2" />
+                <div className="text-[13px] font-medium">Журнал и диагностика</div>
+              </div>
+              <Muted className="mt-1">
+                В журнале: сделки, ребалансы, выходы за сетку, сбор комиссий, срезы капитала каждые 5 минут и все
+                изменения параметров. Формат md с JSON-контекстом — можно отдать ИИ и спросить, почему случилось
+                конкретное событие или просадка.
+              </Muted>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <select
+                  value={journalDay}
+                  onChange={(e) => setJournalDay(e.target.value)}
+                  className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] text-ink focus:border-accent/50 focus:outline-none"
+                >
+                  {(days.length ? days : [""]).map((d) => (
+                    <option key={d} value={d} className="bg-[#171310]">
+                      {d || "сегодня"}
+                    </option>
+                  ))}
+                </select>
+                <Button variant="mint" size="sm" onClick={downloadJournal}>
+                  Скачать журнал
+                </Button>
+              </div>
+              <Muted className="mt-2 text-[11px]">
+                Хранится 30 дней, прошлые дни автоматически сжимаются в .gz.
+              </Muted>
             </Card>
           </FadeIn>
         </div>

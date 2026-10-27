@@ -38,15 +38,17 @@ export function rotateJournals() {
     /* журнал не должен ронять движок */
   }
 }
-function dayKey(d = new Date()) {
+
+export function dayKey(d = new Date()) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
-function clock(d = new Date()) {
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
+const clock = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 
 export type JournalType =
   | "BOOT"
+  | "CONFIG"
+  | "SETTINGS"
+  | "SNAP"
   | "SCAN"
   | "SCORE"
   | "REJECT"
@@ -55,13 +57,13 @@ export type JournalType =
   | "ROTATE_WAIT"
   | "RANGE_OUT"
   | "RANGE_BACK"
-  | "EXIT_ROTATE"
-  | "EXIT_RANGE_DOWN"
   | "CLAIM"
   | "MOVE"
   | "STOP"
   | "EXIT_UP"
   | "EXIT_TIME"
+  | "EXIT_ROTATE"
+  | "EXIT_RANGE_DOWN"
   | "ERROR"
   | "WARN"
   | "HALT"
@@ -73,14 +75,77 @@ export type JournalType =
   | "MAX_REBALANCES"
   | "EXIT_VOLATILITY"
   | "EXIT_FLOW"
-  | "EXIT_ROTATE"
   | "DUPLICATE"
   | "MANUAL";
 
-export function journal(type: JournalType, message: string, extra?: Record<string, unknown>) {
-  const line = `[${clock()}] ${type.padEnd(6)} ${message}`;
+/** Компактный контекст: убираем пустые поля и округляем числа — журнал не должен пухнуть. */
+function compactCtx(value: unknown, depth = 0): unknown {
+  if (value == null) return undefined;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return undefined;
+    if (Number.isInteger(value)) return value;
+    const abs = Math.abs(value);
+    const digits = abs >= 1000 ? 0 : abs >= 1 ? 2 : 6;
+    return Number(value.toFixed(digits));
+  }
+  if (typeof value === "string") return value.length > 120 ? `${value.slice(0, 117)}…` : value;
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    if (depth > 2) return undefined;
+    return value.slice(0, 8).map((v) => compactCtx(v, depth + 1)).filter((v) => v !== undefined);
+  }
+  if (typeof value === "object") {
+    if (depth > 2) return undefined;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const c = compactCtx(v, depth + 1);
+      if (c !== undefined) out[k] = c;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  return undefined;
+}
+
+function fileFor(day = dayKey()) {
+  return path.join(dir, `${day}.md`);
+}
+
+/** Шапка дня: один раз, с полной конфигурацией — по ней ИИ поймёт, в каких условиях шла торговля. */
+export function journalConfig(payload: Record<string, unknown>) {
+  const file = fileFor();
   try {
-    fs.appendFileSync(path.join(dir, `${dayKey()}.md`), line + "\n");
+    if (fs.existsSync(file) && fs.statSync(file).size > 200) return;
+    const body = [
+      `# Журнал ${dayKey()} · ESMAR bot`,
+      "",
+      "> Формат строки: `[время] ТИП сообщение `{\"ctx\":…}`` — время локальное, контекст в JSON.",
+      "> Типы: ENTER/EXIT_* — сделки · RANGE_OUT/BACK — выход из сетки · REBALANCE — перестройка сетки ·",
+      "> ROTATE_WAIT — позиция ждёт ротации · CLAIM — сбор комиссий · SNAP — срез состояния раз в 5 мин ·",
+      "> SETTINGS — изменение параметров (было → стало) · HALT/STOP — риск-стопы · REJECT/SKIP — отказы.",
+      "",
+      "## Конфигурация",
+      "```json",
+      JSON.stringify(compactCtx(payload) ?? {}, null, 1),
+      "```",
+      "",
+      "## События",
+      "",
+    ].join("\n");
+    fs.writeFileSync(file, body);
+  } catch {
+    /* журнал не должен ронять движок */
+  }
+}
+
+/** Технический шум: пишем только в events.jsonl, чтобы md-журнал оставался лёгким. */
+const MD_SKIP = new Set<JournalType>(["WS", "FILL", "SKIP", "SCORE"]);
+
+export function journal(type: JournalType, message: string, extra?: Record<string, unknown>) {
+  const ctx = extra ? compactCtx(extra) : undefined;
+  const suffix = ctx ? ` \`${JSON.stringify(ctx)}\`` : "";
+  const line = `[${clock()}] ${type.padEnd(10)} ${message}${suffix}`;
+  try {
+    if (!MD_SKIP.has(type)) fs.appendFileSync(fileFor(), line + "\n");
     fs.appendFileSync(
       path.join(dir, "events.jsonl"),
       JSON.stringify({ ts: Date.now(), mode: env.mode, type, message, ...(extra ?? {}) }) + "\n",
@@ -91,8 +156,41 @@ export function journal(type: JournalType, message: string, extra?: Record<strin
   return line;
 }
 
+/** Изменения настроек: пишем только реально изменившиеся поля (было → стало). */
+export function journalSettings(prev: Record<string, unknown>, next: Record<string, unknown>) {
+  const changes = Object.keys(next)
+    .filter((k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k]))
+    .map((k) => ({ key: k, from: prev[k], to: next[k] }));
+  if (!changes.length) return;
+  journal("SETTINGS", `параметры: ${changes.map((c) => `${c.key} ${String(c.from)}→${String(c.to)}`).join(", ")}`, {
+    changes,
+    settings: next,
+  });
+}
+
 export function readJournal(day: string, limit = 400): string[] {
-  const file = path.join(dir, `${day}.md`);
+  const file = fileFor(day);
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, "utf8").trim().split("\n").slice(-limit);
+}
+
+/** Полный текст файла — для скачивания. */
+export function readJournalFull(day: string): string {
+  const file = fileFor(day);
+  if (!fs.existsSync(file)) return "";
+  return fs.readFileSync(file, "utf8");
+}
+
+export function journalDays(limit = 30): string[] {
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .map((f) => f.replace(".md", ""))
+      .sort()
+      .reverse()
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
 }
