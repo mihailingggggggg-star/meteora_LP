@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Loader2, ArrowRight, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/kit";
+import { Logo } from "@/components/ui/logo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -46,17 +47,7 @@ export default function LoginPage() {
         className="w-full max-w-[420px]"
       >
         <div className="mb-7 flex items-center gap-3">
-          <svg viewBox="0 0 48 48" className="h-11 w-11">
-            <defs>
-              <linearGradient id="lg2" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#ffb347" />
-                <stop offset="55%" stopColor="#ff7a18" />
-                <stop offset="100%" stopColor="#d1450a" />
-              </linearGradient>
-            </defs>
-            <rect x="1" y="1" width="46" height="46" rx="15" fill="url(#lg2)" />
-            <path d="M13 33V15l11 9 11-9v18" fill="none" stroke="#1a0c02" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <Logo size={44} />
           <div>
             <div className="text-[17px] font-semibold tracking-tight">Meteora Terminal</div>
             <div className="text-[11.5px] text-muted">Управление ликвидностью DLMM</div>

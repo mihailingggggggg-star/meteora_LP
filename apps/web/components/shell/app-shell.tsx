@@ -20,6 +20,7 @@ import {
 import { motion } from "framer-motion";
 import { cn } from "@/lib/format";
 import { ConnectWallet } from "@/components/wallet/connect-wallet";
+import { Logo } from "@/components/ui/logo";
 import { useEngineState } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -44,31 +45,6 @@ const NAV = [
   { href: "/analytics", icon: PieChart, label: "Аналитика" },
 
 ];
-
-function Logo({ size = 40 }: { size?: number }) {
-  return (
-    <div className="relative grid place-items-center" style={{ width: size, height: size }}>
-      <svg viewBox="0 0 48 48" style={{ width: size, height: size }}>
-        <defs>
-          <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#ffb347" />
-            <stop offset="55%" stopColor="#ff7a18" />
-            <stop offset="100%" stopColor="#d1450a" />
-          </linearGradient>
-        </defs>
-        <rect x="1" y="1" width="46" height="46" rx="15" fill="url(#lg)" />
-        <path
-          d="M13 33V15l11 9 11-9v18"
-          fill="none"
-          stroke="#1a0c02"
-          strokeWidth="3.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </div>
-  );
-}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -99,7 +75,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[92px] flex-col p-3 lg:flex">
         <div className="surface flex h-full flex-col items-center gap-1 py-4">
           <Link href="/" className="mb-3">
-            <Logo />
+            <Logo size={44} />
           </Link>
           {NAV.map((item) => {
             const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
@@ -150,7 +126,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <header className="sticky top-0 z-30 px-3 pt-3 lg:px-5 lg:pt-5">
           <div className="surface flex min-w-0 items-center gap-2 overflow-hidden px-2.5 py-2 lg:gap-3 lg:px-4 lg:py-2.5">
             <div className="lg:hidden">
-              <Logo size={32} />
+              <Logo size={30} withWordmark />
             </div>
             <div className="hidden items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-2 md:flex">
               <Search className="h-3.5 w-3.5 text-dim" />
