@@ -120,6 +120,9 @@ ENGINE_PORT="$(grep -E '^ENGINE_PORT=' "$DST/.env" | head -1 | cut -d= -f2- || t
 for _ in 1 2 3 4 5; do port_busy "$WEB_PORT" && WEB_PORT=$((WEB_PORT + 1)) || break; done
 for _ in 1 2 3 4 5; do port_busy "$ENGINE_PORT" && ENGINE_PORT=$((ENGINE_PORT + 1)) || break; done
 log "порты: web=$WEB_PORT engine=$ENGINE_PORT"
+if [[ "$ENGINE_PORT" != "$(grep -E '^ENGINE_PORT=' "$DST/.env" | head -1 | cut -d= -f2- || true)" ]]; then
+  log "порт движка из .env был занят — переехали на $ENGINE_PORT (проверьте, кто держит старый: ss -ltnp)"
+fi
 
 IP="$(curl -fsS --max-time 10 https://api.ipify.org)"
 HOST="${DOMAIN:-lp.${IP//./-}.sslip.io}"
@@ -259,15 +262,23 @@ EOF
 fi
 
 # ── 7. проверка
+# движок закрыт токеном (ENGINE_TOKEN), поэтому проверять надо с Authorization,
+# иначе установка «падает» на 401 при полностью рабочем сервисе
 log "проверка (до 40 секунд)"
+ENGINE_TOKEN_V="$(grep -E '^ENGINE_TOKEN=' "$DST/.env" | head -1 | cut -d= -f2- || true)"
+AUTH=()
+[[ -n "$ENGINE_TOKEN_V" ]] && AUTH=(-H "Authorization: Bearer $ENGINE_TOKEN_V")
+eng_health() { curl -fsS --max-time 3 "${AUTH[@]}" "http://127.0.0.1:$ENGINE_PORT/api/health"; }
 ok=0
 for i in $(seq 1 20); do
-  if curl -fsS --max-time 3 "http://127.0.0.1:$ENGINE_PORT/api/health" >/dev/null 2>&1 \
+  if eng_health >/dev/null 2>&1 \
      && curl -fsS -o /dev/null --max-time 3 "http://127.0.0.1:$WEB_PORT/login" 2>/dev/null; then ok=1; break; fi
   sleep 2
 done
-curl -fsS --max-time 5 "http://127.0.0.1:$ENGINE_PORT/api/health" && echo || {
-  echo "движок не поднялся, лог:"; tail -25 "$DST/.run/engine.log" 2>/dev/null
+eng_health && echo || {
+  echo "движок не поднялся (порт $ENGINE_PORT, токен $([[ -n "$ENGINE_TOKEN_V" ]] && echo задан || echo пуст)), лог:"
+  tail -25 "$DST/.run/engine.log" 2>/dev/null
+  echo "чем занят порт: ss -ltnp | grep -E ':(8787|8788|8789)'"
 }
 curl -o /dev/null -s -w "web: %{http_code}\n" --max-time 5 "http://127.0.0.1:$WEB_PORT/login" || true
 if (( ok == 0 )); then die "проверка не прошла — смотрите логи"; fi
@@ -286,7 +297,9 @@ cat <<EOF
   Логи:     journalctl -u meteora-engine -f
             tail -f $DST/.run/engine.log
 
-  Обновить: cd $DST && git pull && npm install && npm run build && systemctl restart meteora-web meteora-engine
+  Проверить: curl -s -H "Authorization: Bearer $(grep -E '^ENGINE_TOKEN=' "$DST/.env" | cut -d= -f2-)" \
+                     http://127.0.0.1:$ENGINE_PORT/api/state | head -c 200
+  Обновить:  cd $DST && git pull && rm -rf apps/web/.next && bash deploy/install.sh
 
 Проверьте, что 80/443 открыты: ufw allow 80,443/tcp
 EOF
