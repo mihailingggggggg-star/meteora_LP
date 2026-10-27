@@ -319,6 +319,12 @@ export function startServer() {
         const data = await engine.chart(r.pool, q.get("tf") ?? "5m");
         return json(res, 200, data);
       }
+      const metricsMatch = p.match(/^\/api\/positions\/(\d+)\/metrics$/);
+      if (metricsMatch) {
+        const row = db.prepare(`SELECT pool FROM positions WHERE id = ?`).get(Number(metricsMatch[1])) as any;
+        if (!row) return json(res, 404, { error: "not found" });
+        return json(res, 200, await engine.poolMetrics(row.pool));
+      }
       const poolChart = p.match(/^\/api\/pools\/([A-Za-z0-9]+)\/chart$/);
       if (poolChart) {
         const data = await engine.chart(poolChart[1], q.get("tf") ?? "5m");

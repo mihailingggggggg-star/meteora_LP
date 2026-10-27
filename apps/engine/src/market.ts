@@ -98,6 +98,7 @@ export async function fetchGeckoPool(poolAddress: string): Promise<any | null> {
       liquidity: Number(a.reserve_in_usd),
       vol24: Number(a.volume_usd?.h24 ?? 0),
       vol1h: Number(a.volume_usd?.h1 ?? 0),
+      change5m: Number(a.price_change_percentage?.m5 ?? 0),
       change1h: Number(a.price_change_percentage?.h1 ?? 0),
       change24h: Number(a.price_change_percentage?.h24 ?? 0),
       name: a.name,

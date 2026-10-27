@@ -279,6 +279,108 @@ function PnlBreakdown({
   );
 }
 
+const compactNum = (v: number | null | undefined) => {
+  if (v == null || !Number.isFinite(v) || v === 0) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  return `${Math.round(v)}`;
+};
+
+function StatRow({ label, value, tone }: { label: string; value: React.ReactNode; tone?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b border-white/[0.04] py-[3px] last:border-0">
+      <span className="truncate text-[10px] uppercase tracking-wide text-dim">{label}</span>
+      <span className={`num shrink-0 text-[11.5px] ${tone ?? "text-ink/90"}`}>{value}</span>
+    </div>
+  );
+}
+
+/** Блок «как в Meteora»: комиссии пула, токен и активность. Только реальные данные API. */
+function PoolStatsBlock({ data }: { data: any }) {
+  if (!data || data.error) return null;
+  const p = data.pool ?? {};
+  const f = data.fees ?? {};
+  const t = data.token ?? {};
+  const st = data.stats ?? {};
+  const chg = (v: number | null) =>
+    v == null ? <span className="text-dim">—</span> : <span className={v >= 0 ? "text-mint" : "text-danger"}>{pct(v)}</span>;
+  const delta = p.priceDeltaPct == null ? null : Number(p.priceDeltaPct);
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-[13px] font-medium">
+          Параметры пула
+          <Chip tone="neutral">Meteora DLMM</Chip>
+        </div>
+        <div className="num text-[10.5px] text-dim">
+          bin step {pctPlain(p.binStepPct, 2)} · TVL {usdCompact(p.tvl)}
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-x-7 gap-y-5 md:grid-cols-3">
+        <div>
+          <div className="mb-1.5 text-[9.5px] uppercase tracking-[0.12em] text-dim">Комиссии</div>
+          <StatRow label="24h Fees" value={usdCompact(f.h24)} tone="text-mint" />
+          <StatRow label="24h Fees / TVL" value={pctPlain(f.tvl24)} />
+          <StatRow label="Bin Step" value={compactNum(p.binStep)} />
+          <StatRow label="Base Fee" value={pctPlain(p.baseFeePct)} />
+          <StatRow label="Dynamic Fee" value={pctPlain(p.dynamicFeePct, 4)} />
+          <StatRow label="Total Trading Fee" value={pctPlain(p.totalFeePct, 4)} tone="text-accent2" />
+          <StatRow label="Max Fee" value={p.maxFeePct ? pctPlain(p.maxFeePct) : "—"} />
+          <StatRow label="Protocol Fee" value={pctPlain(p.protocolFeePct)} />
+          <StatRow label="Fee token / Quote" value={`${p.feeToken} / ${p.quote}`} />
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-[9.5px] uppercase tracking-[0.12em] text-dim">Токен</div>
+          <StatRow label="Возраст пула" value={hours(p.ageHours ?? 0)} />
+          <StatRow label="Market Cap" value={usdCompact(t.marketCap)} />
+          <StatRow label="FDV" value={usdCompact(t.fdv || t.marketCap)} />
+          <StatRow label="Holders" value={t.holders ? t.holders.toLocaleString("ru-RU") : "—"} />
+          <StatRow label="Total Supply" value={compactNum(t.totalSupply)} />
+          <StatRow
+            label="Freeze Authority"
+            value={t.freezeDisabled ? "отключён" : "активен"}
+            tone={t.freezeDisabled ? "text-mint" : "text-danger"}
+          />
+          <StatRow
+            label="Изменение цены"
+            value={
+              <span className="flex gap-2">
+                <span className="text-dim">5м</span>
+                {chg(t.change5m == null ? null : Number(t.change5m))}
+                <span className="text-dim">1ч</span>
+                {chg(t.change1h == null ? null : Number(t.change1h))}
+                <span className="text-dim">24ч</span>
+                {chg(t.change24h == null ? null : Number(t.change24h))}
+              </span>
+            }
+          />
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-[9.5px] uppercase tracking-[0.12em] text-dim">Активность</div>
+          <StatRow label="Active TVL (±2%)" value={usdCompact(st.activeTvl)} />
+          <StatRow label="Fees / Active TVL" value={pctPlain(st.feesActiveTvl, 0)} />
+          <StatRow label="Volume 24h" value={usdCompact(st.vol24)} />
+          <StatRow label="Volume / Active TVL" value={pctPlain(st.volActiveTvl, 0)} />
+          <StatRow label="Volatility (ATR 5м)" value={pctPlain(st.volatility)} />
+          <StatRow label="Цена пула (Meteora)" value={priceSmart(p.currentPrice)} tone="text-accent2" />
+          <StatRow label="Цена графика (Gecko)" value={priceSmart(p.chartPrice)} />
+          <StatRow
+            label="Δ график / пул"
+            value={delta == null ? "—" : `${delta >= 0 ? "+" : ""}${delta.toFixed(3)}%`}
+            tone={delta == null ? "text-dim" : Math.abs(delta) < 0.15 ? "text-mint" : "text-danger"}
+          />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 /** Вертикальная шкала сетки ±range с бинами и границами ребаланса. */
 function GridLadder({
   entry,
@@ -468,6 +570,7 @@ export default function PositionDetail() {
   const [layers, setLayers] = useState<ChartLayers>({ volume: true, liquidity: true, zones: true });
   const [valueMode, setValueMode] = useState<"mc" | "price">("mc");
   const [notFound, setNotFound] = useState(false);
+  const [metrics, setMetrics] = useState<any>(null);
   const cache = useRef<Record<string, any>>({});
 
   useEffect(() => {
@@ -483,6 +586,21 @@ export default function PositionDetail() {
         .catch(() => alive && setNotFound(true));
     load();
     const t = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+    const load = () =>
+      engineGet<any>(`/positions/${id}/metrics`)
+        .then((d) => alive && setMetrics(d))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 15_000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -884,6 +1002,10 @@ export default function PositionDetail() {
           </Card>
         </FadeIn>
       </div>
+
+      <FadeIn delay={0.2}>
+        <PoolStatsBlock data={metrics} />
+      </FadeIn>
     </div>
   );
 }

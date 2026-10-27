@@ -1540,6 +1540,105 @@ export class Engine {
       entryPrice: null,
     };
   }
+
+  /**
+   * Полная карточка пула и токена для блока «как в Meteora» на странице позиции.
+   * Берём только те метрики, которые реально есть в DLMM API / GeckoTerminal / цепи —
+   * ничего не выдумываем: чего нет, того нет в ответе.
+   */
+  async poolMetrics(address: string) {
+    const cached = this.positions.find((p) => p.pool.address === address)?.pool ?? null;
+    const fresh = await fetchPool(address).catch(() => null);
+    const pool = fresh ?? cached;
+    if (!pool) return { error: "pool not found" } as const;
+
+    const pair = splitPair(pool);
+    const geo = await fetchGeckoPool(address).catch(() => null);
+
+    let bins: Awaited<ReturnType<typeof readBinLiquidity>> | null = null;
+    try {
+      bins = await readBinLiquidity(pool, 0.12);
+    } catch {
+      bins = null;
+    }
+
+    const step = pool.binStep / 10_000 || 0.01;
+    const activeTvl = bins
+      ? bins.bins.filter((b) => Math.abs(b.priceRel - 1) <= 0.02).reduce((sum, b) => sum + b.usd, 0)
+      : 0;
+
+    let volatility: number | null = null;
+    let chartPrice: number | null = null;
+    try {
+      const candles = await this.getCandles(address, "5m");
+      if (candles.length >= 16) {
+        volatility = computeAtr(candles, 14);
+        chartPrice = candles[candles.length - 1].c;
+      }
+    } catch {
+      volatility = null;
+    }
+
+    const ageHours = pool.createdAt ? Math.max(0, (Date.now() - pool.createdAt) / 3_600_000) : 0;
+    const totalFeePct = pool.baseFeePct + pool.dynamicFeePct;
+    // ВАЖНО: active.price из DLMM SDK — это (1+step)^binId, множитель относительно бина 0,
+    // а не рыночная цена. Рыночная цена активного бина = current_price пула из DLMM API.
+    const poolPrice = pool.currentPrice;
+
+    return {
+      pool: {
+        address: pool.address,
+        name: pool.name,
+        binStep: pool.binStep,
+        binStepPct: step * 100,
+        baseFeePct: pool.baseFeePct,
+        dynamicFeePct: pool.dynamicFeePct,
+        totalFeePct,
+        maxFeePct: pool.maxFeePct,
+        protocolFeePct: pool.protocolFeePct,
+        feeToken: pair.sol.symbol,
+        quote: pair.sol.symbol,
+        tvl: pool.tvl,
+        ageHours,
+        currentPrice: poolPrice,
+        chartPrice,
+        priceDeltaPct:
+          chartPrice && poolPrice > 0 ? (chartPrice / poolPrice - 1) * 100 : null,
+      },
+      fees: {
+        h1: pool.fees1h,
+        h12: pool.fees12h,
+        h24: pool.fees24,
+        tvl24: pool.feeTvl24h,
+        protocol24: pool.protocolFees24,
+        cumulative: pool.cumulativeFees,
+      },
+      token: {
+        symbol: pair.token.symbol,
+        address: pair.token.address,
+        price: pair.token.price,
+        marketCap: pair.token.marketCap,
+        fdv: geo?.fdv ?? null,
+        holders: pair.token.holders,
+        totalSupply: pair.token.totalSupply,
+        freezeDisabled: pair.token.freezeDisabled,
+        verified: pair.token.verified,
+        change5m: geo?.change5m ?? null,
+        change1h: geo?.change1h ?? null,
+        change24h: geo?.change24h ?? null,
+      },
+      stats: {
+        activeTvl,
+        feesActiveTvl: activeTvl > 0 ? (pool.fees24 / activeTvl) * 100 : 0,
+        volActiveTvl: activeTvl > 0 ? (pool.vol24 / activeTvl) * 100 : 0,
+        vol24: pool.vol24,
+        vol1h: pool.vol1h,
+        volatility,
+        turnover24: pool.tvl > 0 ? (pool.vol24 / pool.tvl) * 100 : 0,
+        cumulativeVolume: pool.cumulativeVolume,
+      },
+    };
+  }
 }
 
 export const engine = new Engine();

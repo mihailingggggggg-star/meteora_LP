@@ -18,6 +18,8 @@ export type Pool = {
   binStep: number;
   baseFeePct: number;
   protocolFeePct: number;
+  maxFeePct: number;
+  collectFeeMode: number;
   dynamicFeePct: number;
   tvl: number;
   vol24: number;
@@ -32,6 +34,12 @@ export type Pool = {
   fees24: number;
   fees1h: number;
   fees30m: number;
+  fees12h: number;
+  protocolFees24: number;
+  cumulativeFees: number;
+  cumulativeVolume: number;
+  apr: number;
+  apy: number;
 };
 
 const num = (v: unknown, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
@@ -57,6 +65,8 @@ export function mapPool(raw: any): Pool {
     binStep: num(raw.pool_config?.bin_step, 25),
     baseFeePct: num(raw.pool_config?.base_fee_pct),
     protocolFeePct: num(raw.pool_config?.protocol_fee_pct),
+    maxFeePct: num(raw.pool_config?.max_fee_pct),
+    collectFeeMode: num(raw.pool_config?.collect_fee_mode),
     dynamicFeePct: num(raw.dynamic_fee_pct),
     tvl: num(raw.tvl),
     vol24: num(raw.volume?.["24h"]),
@@ -71,6 +81,12 @@ export function mapPool(raw: any): Pool {
     fees24: num(raw.fees?.["24h"]),
     fees1h: num(raw.fees?.["1h"]),
     fees30m: num(raw.fees?.["30m"]),
+    fees12h: num(raw.fees?.["12h"]),
+    protocolFees24: num(raw.protocol_fees?.["24h"]),
+    cumulativeFees: num(raw.cumulative_metrics?.fees),
+    cumulativeVolume: num(raw.cumulative_metrics?.volume),
+    apr: num(raw.apr),
+    apy: num(raw.apy),
   };
 }
 
