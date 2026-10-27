@@ -91,7 +91,7 @@ export default function AnalyticsPage() {
             <Stat
               label="PnL за период"
               value={<span className={(data?.pnl ?? 0) >= 0 ? "text-mint" : "text-danger"}>{usd(data?.pnl ?? 0)}</span>}
-              sub={pct(data?.pnlPct ?? 0)}
+              sub={`${pct(data?.pnlPct ?? 0)} · реал. ${usd(data?.pnlClosed ?? 0)} · нереал. ${usd(data?.pnlUnrealized ?? 0)}`}
             />
           </Card>
         </FadeIn>
@@ -127,12 +127,14 @@ export default function AnalyticsPage() {
             <div className="flex items-center justify-between p-5 pb-1">
               <div>
                 <div className="text-[13px] font-medium">Кривая капитала</div>
-                <Muted>депозит + собранные комиссии</Muted>
+                <Muted>
+                  сейчас {usd(data?.equityNow ?? 0)} · депозит {usd(data?.deposit ?? 0)}
+                </Muted>
               </div>
               <Chip tone={(data?.pnl ?? 0) >= 0 ? "mint" : "danger"}>{pct(data?.pnlPct ?? 0)}</Chip>
             </div>
             <div className="px-1 pb-2">
-              <EquityChart data={data?.equitySeries ?? []} height={260} />
+              <EquityChart data={data?.equitySeries ?? []} height={260} baseline={data?.deposit ?? 0} />
             </div>
           </Card>
         </FadeIn>

@@ -1,11 +1,20 @@
 "use client";
 
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { usd } from "@/lib/format";
 
 type Point = { ts: number; equity: number };
 
-export function EquityChart({ data, height = 240 }: { data: Point[]; height?: number }) {
+export function EquityChart({
+  data,
+  height = 240,
+  baseline,
+}: {
+  data: Point[];
+  height?: number;
+  /** уровень депозита: видно, выше или ниже него капитал */
+  baseline?: number;
+}) {
   const series =
     data.length > 2
       ? data
@@ -33,6 +42,14 @@ export function EquityChart({ data, height = 240 }: { data: Point[]; height?: nu
               <stop offset="100%" stopColor="#ff7a18" stopOpacity={0} />
             </linearGradient>
           </defs>
+          {baseline && baseline > 0 ? (
+            <ReferenceLine
+              y={baseline}
+              stroke="rgba(255,255,255,0.35)"
+              strokeDasharray="4 4"
+              label={{ value: "депозит", position: "insideBottomLeft", fill: "rgba(255,255,255,0.45)", fontSize: 9 }}
+            />
+          ) : null}
           <XAxis
             dataKey="ts"
             tickFormatter={(v) =>

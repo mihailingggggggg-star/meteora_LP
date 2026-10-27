@@ -60,8 +60,9 @@ function analytics(params: URLSearchParams) {
     )
     .all(mode, from, to) as any[];
 
-  const pnl = closed.reduce((s, p) => s + (p.pnl_usd ?? 0), 0);
-  const fees = closed.reduce((s, p) => s + (p.fees_usd ?? 0), 0);
+  // реализованный результат закрытых сделок в окне
+  const pnlClosed = closed.reduce((s, p) => s + (p.pnl_usd ?? 0), 0);
+  const fees = closed.reduce((s, p) => s + (p.fees_usd ?? 0) + (p.claimed_usd ?? 0), 0);
   const wins = closed.filter((p) => (p.pnl_usd ?? 0) > 0);
   const losses = closed.filter((p) => (p.pnl_usd ?? 0) <= 0);
   const lossPnl = losses.reduce((s, p) => s + (p.pnl_usd ?? 0), 0);
@@ -110,8 +111,19 @@ function analytics(params: URLSearchParams) {
   const frictionTotal = closed.reduce((s, p) => s + (p.friction_usd ?? 0), 0);
 
   const days = Math.max(1, (to - from) / 86_400_000);
-  const avgDaily = pnl / days;
   const state = engine.getEquity();
+
+  // PnL периода — это изменение капитала, а не сумма закрытых сделок:
+  // иначе «сделка дала +$10, а капитал в минусе» из-за нереализованного минуса открытых позиций
+  const before = db
+    .prepare(`SELECT equity FROM equity WHERE mode=? AND ts<=? ORDER BY ts DESC LIMIT 1`)
+    .get(mode, from) as any;
+  const equityStart = Number(before?.equity ?? equity[0]?.equity ?? engine.deposit);
+  const equityNow = state.equity;
+  const pnl = equityNow - equityStart;
+  // нереализованный результат открытых — по той же формуле, что в карточке позиции
+  const unrealizedOpen = engine.positions.reduce((sum, p) => sum + (engine.positionDto(p)?.pnl ?? 0), 0);
+  const avgDaily = pnl / days;
   const now = new Date();
   const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   const daysLeft = Math.max(0, Math.ceil((endOfMonth.getTime() - now.getTime()) / 86_400_000));
@@ -122,7 +134,13 @@ function analytics(params: URLSearchParams) {
     from,
     to,
     pnl,
-    pnlPct: (pnl / Math.max(1, engine.deposit)) * 100,
+    pnlPct: equityStart > 0 ? (pnl / equityStart) * 100 : 0,
+    pnlClosed,
+    pnlUnrealized: unrealizedOpen,
+    equityNow,
+    equityStart,
+    deposit: engine.deposit,
+    banked: state.banked,
     fees,
     trades: closed.length,
     wins: wins.length,
@@ -137,7 +155,10 @@ function analytics(params: URLSearchParams) {
     rebalances: rebalancesTotal,
     avgHoldHours: holdHours,
     friction: frictionTotal,
-    equitySeries: equity.map((e) => ({ ts: e.ts, equity: e.equity })),
+    equitySeries: [
+      { ts: from, equity: equityStart },
+      ...equity.map((e) => ({ ts: e.ts, equity: e.equity })),
+    ],
     daily: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)),
     positions: closed.slice(0, 60).map((p) => ({
       id: p.id,

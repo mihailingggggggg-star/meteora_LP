@@ -1343,17 +1343,26 @@ export class Engine {
 
   equityNow(): number {
     const fees = this.positions.reduce((s, p) => s + p.feesAccrued, 0);
-    return this.cash + this.totalLiveValue() + fees;
+    // banked — прибыль, отложенная «на холодный кошелёк»: это тот же капитал, просто вне риска
+    return this.cash + this.totalLiveValue() + fees + this.banked;
   }
 
   getEquity() {
     const inPositions = this.totalLiveValue();
     const pendingFees = this.positions.reduce((s, p) => s + p.feesAccrued, 0);
-    return { equity: this.cash + inPositions + pendingFees, cash: this.cash, inPositions, pendingFees };
+    return {
+      equity: this.cash + inPositions + pendingFees + this.banked,
+      cash: this.cash,
+      inPositions,
+      pendingFees,
+      banked: this.banked,
+    };
   }
 
   totalFees(): number {
-    const row = db.prepare(`SELECT COALESCE(SUM(fees_usd),0) AS f FROM positions WHERE mode = ?`).get(this.mode) as any;
+    const row = db
+      .prepare(`SELECT COALESCE(SUM(fees_usd),0) + COALESCE(SUM(claimed_usd),0) AS f FROM positions WHERE mode = ?`)
+      .get(this.mode) as any;
     return Number(row?.f ?? 0);
   }
 
@@ -1405,6 +1414,8 @@ export class Engine {
       to: now,
       equityNow,
       equityStart,
+      deposit: this.deposit,
+      banked: this.banked,
       pnl,
       pnlPct: equityStart > 0 ? (pnl / equityStart) * 100 : 0,
       realized,
@@ -1416,14 +1427,9 @@ export class Engine {
 
   snapshotEquityNow() {
     const eq = this.getEquity();
-    db.prepare(`INSERT INTO equity (ts, mode, equity, cash, in_positions, fees_cum) VALUES (?,?,?,?,?,?)`).run(
-      Date.now(),
-      this.mode,
-      eq.equity,
-      eq.cash,
-      eq.inPositions,
-      this.totalFees(),
-    );
+    db.prepare(
+      `INSERT INTO equity (ts, mode, equity, cash, in_positions, fees_cum, banked) VALUES (?,?,?,?,?,?,?)`,
+    ).run(Date.now(), this.mode, eq.equity, eq.cash, eq.inPositions, this.totalFees(), this.banked);
   }
 
   positionDto(p = this.positions[0]) {

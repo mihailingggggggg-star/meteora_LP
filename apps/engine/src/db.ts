@@ -6,6 +6,7 @@ import { env } from "./env.js";
 const dir = path.join(env.root, "data");
 fs.mkdirSync(dir, { recursive: true });
 
+
 export const db = new DatabaseSync(path.join(dir, "engine.db"));
 
 db.exec(`
@@ -175,4 +176,12 @@ export function setSetting(key: string, value: unknown) {
   db.prepare(
     `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run(key, JSON.stringify(value));
+}
+
+// ── миграции ──
+// отложенная прибыль должна попадать в капитал, иначе кривая капитала «падает» при фиксации
+try {
+  db.exec(`ALTER TABLE equity ADD COLUMN banked REAL DEFAULT 0`);
+} catch {
+  /* колонка уже есть */
 }
