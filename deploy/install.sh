@@ -25,11 +25,37 @@ apt-get update -qq
 apt-get install -y -qq curl git rsync ca-certificates gnupg debian-keyring debian-archive-keyring \
   apt-transport-https iproute2
 
-if ! command -v node >/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]]; then
-  log "nodejs 22"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
-  apt-get install -y -qq nodejs
+# dpkg мог остаться в полуразобранном состоянии после прошлых попыток
+dpkg --configure -a >/dev/null 2>&1 || true
+apt-get -f install -y >/dev/null 2>&1 || true
+
+# ── node: НЕ трогаем системные пакеты (на сервере могут жить другие боты, которым нужен свой node).
+# Если системный node старше 20 — кладём отдельный в /opt/node22 и только им пользуемся.
+NODE_DIR=""
+if command -v node >/dev/null 2>&1 && [[ "$(node -v | cut -d. -f1 | tr -d v)" -ge 20 ]]; then
+  NODE_BIN="$(command -v node)"
+  log "node $(node -v) уже есть — использую его"
+else
+  NODE_VER="v22.11.0"
+  case "$(uname -m)" in
+    aarch64|arm64) NARCH="arm64" ;;
+    *) NARCH="x64" ;;
+  esac
+  if [[ ! -x /opt/node22/bin/node ]]; then
+    log "node $NODE_VER в /opt/node22 (системный nodejs не трогаю)"
+    mkdir -p /opt/node22
+    curl -fsSL "https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-$NARCH.tar.xz" -o /tmp/node.tar.xz \
+      || die "не скачался node — проверьте интернет на сервере"
+    tar -xJf /tmp/node.tar.xz -C /opt/node22 --strip-components=1
+    rm -f /tmp/node.tar.xz
+  fi
+  NODE_BIN="/opt/node22/bin/node"
+  NODE_DIR="/opt/node22/bin"
+  "$NODE_BIN" -v >/dev/null || die "node не запускается"
 fi
+NPX_BIN="$(dirname "$NODE_BIN")/npx"
+[[ -x "$NPX_BIN" ]] || NPX_BIN="$(dirname "$NODE_BIN")/npm"
+export PATH="$(dirname "$NODE_BIN"):$PATH"
 
 # ── 2. пользователь и код
 log "пользователь meteora"
@@ -95,16 +121,24 @@ fi
 
 if [[ -f "$DST/apps/web/.next/BUILD_ID" ]]; then
   log "зависимости (готовая сборка .next уже есть — next build пропускаю)"
-  sudo -u meteora bash -lc "cd $DST && npm install --no-audit --no-fund"
+  sudo -u meteora env PATH="$(dirname "$NODE_BIN"):/usr/local/bin:/usr/bin:/bin" bash -c "cd $DST && npm install --no-audit --no-fund"
 else
   log "зависимости и сборка (2–4 минуты)"
-  sudo -u meteora bash -lc "cd $DST && npm install --no-audit --no-fund && NODE_OPTIONS=--max-old-space-size=1400 npm run build"
+  sudo -u meteora env PATH="$(dirname "$NODE_BIN"):/usr/local/bin:/usr/bin:/bin" NODE_OPTIONS=--max-old-space-size=1400 \
+    bash -c "cd $DST && npm install --no-audit --no-fund && npm run build"
 fi
 
 # ── 5. systemd
 log "systemd-юниты"
-sed -e "s|-p 3000|-p $WEB_PORT|" -e "s|:3000|:$WEB_PORT|" "$DST/deploy/meteora-web.service" > /etc/systemd/system/meteora-web.service
-sed -e "s|ENGINE_PORT=8787|ENGINE_PORT=$ENGINE_PORT|" "$DST/deploy/meteora-engine.service" > /etc/systemd/system/meteora-engine.service
+NODE_PATH_ENV="$(dirname "$NODE_BIN"):/usr/local/bin:/usr/bin:/bin"
+sed -e "s|-p 3000|-p $WEB_PORT|" -e "s|:3000|:$WEB_PORT|" \
+    -e "s|ExecStart=/usr/bin/npx|ExecStart=$NPX_BIN|" \
+    -e "s|^Environment=NODE_ENV=production|Environment=PATH=$NODE_PATH_ENV\nEnvironment=NODE_ENV=production|" \
+    "$DST/deploy/meteora-web.service" > /etc/systemd/system/meteora-web.service
+sed -e "s|ENGINE_PORT=8787|ENGINE_PORT=$ENGINE_PORT|" \
+    -e "s|ExecStart=/usr/bin/npx|ExecStart=$NPX_BIN|" \
+    -e "s|^EnvironmentFile=|Environment=PATH=$NODE_PATH_ENV\nEnvironmentFile=|" \
+    "$DST/deploy/meteora-engine.service" > /etc/systemd/system/meteora-engine.service
 systemctl daemon-reload
 systemctl enable meteora-engine meteora-web >/dev/null
 systemctl restart meteora-engine meteora-web
