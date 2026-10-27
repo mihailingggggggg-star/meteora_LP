@@ -828,7 +828,7 @@ export default function PositionDetail() {
               </div>
             </div>
           </div>
-          <div className="mt-3.5 grid grid-cols-3 gap-2 border-t border-white/[0.05] pt-3">
+          <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-white/[0.05] pt-3 sm:grid-cols-4">
             <div>
               <div className="text-[9px] uppercase tracking-wider text-dim">Цена</div>
               <div className="num mt-0.5 text-[13px] text-ink">{priceSmart(current)}</div>
@@ -836,6 +836,10 @@ export default function PositionDetail() {
             <div>
               <div className="text-[9px] uppercase tracking-wider text-dim">Комиссии</div>
               <div className="num mt-0.5 text-[13px] text-mint">{usd(view.fees)}</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-wider text-dim">Объём 30м</div>
+              <div className="num mt-0.5 text-[13px] text-accent2">{usdCompact(live?.vol30m ?? 0)}</div>
             </div>
             <div>
               <div className="text-[9px] uppercase tracking-wider text-dim">Ребалансы</div>
@@ -919,6 +923,7 @@ export default function PositionDetail() {
                   <span>{chart?.poolName}</span>
                   {chart?.poolTvl ? <span>· пул {usdCompact(chart.poolTvl)}</span> : null}
                   {chart?.poolVol24 ? <span>· объём 24ч {usdCompact(chart.poolVol24)}</span> : null}
+                  <span title="Объём последней 30-минутной свечи">· 30м {usdCompact(live?.vol30m ?? 0)}</span>
                   {mcFactor > 0 ? <span className="text-accent2">· кап {usdCompact(mcNow)}</span> : null}
                   {chart?.binLiquidity?.length ? <span>· бинов в обзоре {chart.binLiquidity.length}</span> : null}
                 </div>

@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { ArrowUpRight, ArrowDownRight, ChevronRight, Clock3, RefreshCw, Percent, ShieldAlert } from "lucide-react";
+import { Activity, ArrowUpRight, ArrowDownRight, ChevronRight, Clock3, RefreshCw, Percent, ShieldAlert } from "lucide-react";
 import { Card, Chip } from "@/components/ui/kit";
 import { TokenIcon } from "@/components/ui/token-icon";
-import { hours, meteoraPoolUrl, pct, pctPlain, priceSmart, reasonLabel, usd } from "@/lib/format";
+import { hours, meteoraPoolUrl, pct, pctPlain, priceSmart, reasonLabel, usd, usdCompact } from "@/lib/format";
 
 /** Полоса диапазона ±range с текущей ценой внутри. */
 export function RangeBar({ p, height = 34 }: { p: any; height?: number }) {
@@ -132,6 +132,9 @@ export function PositionCard({ p, index = 0, onClose }: { p: any; index?: number
           </span>
           <span className="flex items-center gap-1 text-accent2">
             <RefreshCw className="h-3 w-3" /> {p.rebalances ?? 0}/{p.maxRebalances ?? 8} ребалансов
+          </span>
+          <span className="flex items-center gap-1 text-dim" title="Объём последней 30-минутной свечи">
+            <Activity className="h-3 w-3" /> 30м {usdCompact(p.vol30m ?? 0)}
           </span>
           <span className="flex items-center gap-1 text-dim">
             <ShieldAlert className="h-3 w-3" /> серия {p.consecutiveLosses ?? 0}/{p.consecutiveLossStop ?? 3}

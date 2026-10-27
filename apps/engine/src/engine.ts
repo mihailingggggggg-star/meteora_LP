@@ -31,6 +31,8 @@ type RtPos = {
   capital: number;
   initialCapital: number;
   frictionPaid: number;
+  /** объём последней 30-минутной свечи (USD) */
+  vol30m: number;
   entryPrice: number;
   /** средняя цена входа токеновой части относительно центра сетки */
   avgEntryRel: number;
@@ -267,6 +269,7 @@ export class Engine {
           capital: row.capital,
           initialCapital: row.initial_capital ?? row.capital,
           frictionPaid: row.friction_usd ?? 0,
+          vol30m: 0,
           entryPrice: row.entry_price,
           avgEntryRel: 1,
           rangePct: row.range_pct ?? 0.025,
@@ -789,6 +792,7 @@ export class Engine {
       capital,
       initialCapital: capital,
       frictionPaid: 0,
+      vol30m: 0,
       entryPrice,
       avgEntryRel: 1,
       rangePct: plan.rangePct,
@@ -993,6 +997,15 @@ export class Engine {
     }
     pos.lastPrice = price;
     const rel = price / pos.entryPrice;
+
+    // объём последней 30-минутной свечи — для карточки позиции
+    try {
+      const c30 = await this.getCandles(pos.pool.address, "30m");
+      const lastC = c30[c30.length - 1];
+      if (lastC && Number.isFinite(lastC.v)) pos.vol30m = lastC.v;
+    } catch {
+      /* без свечей — оставляем прошлое значение */
+    }
 
     // ── ликвидность пула по бинам (для честной доли комиссий) — раз в 10 минут
     if (now - pos.lastBinsAt > 10 * 60_000) {
@@ -1468,6 +1481,7 @@ export class Engine {
       rShare: 0,
       feePct: 0,
       vol24: p.pool.vol24,
+      vol30m: p.vol30m ?? 0,
       poolTvl: p.pool.tvl,
       solUsd: val.solUsd,
       tokenUsd: val.tokenUsd,
@@ -1564,7 +1578,19 @@ export class Engine {
       candles = cached ? this.alignCandles(cached.candles, pool?.currentPrice) : [];
     }
     const step = ((pool?.binStep ?? 100) / 10_000) || 0.01;
-    const priceRef = candles[candles.length - 1]?.c || pool?.currentPrice || 1;
+
+    // ГеокоТерминал и пул могут расходиться на десятые доли процента — а это уже половина сетки.
+    // Масштабируем свечи так, чтобы последняя цена закрытия совпала с ценой пула:
+    // график, бины и лестница диапазона должны жить в одной системе цен.
+    const poolPx = pool?.currentPrice && pool.currentPrice > 0 ? pool.currentPrice : 0;
+    const lastClose = candles[candles.length - 1]?.c ?? 0;
+    if (poolPx > 0 && lastClose > 0) {
+      const k = poolPx / lastClose;
+      if (Math.abs(k - 1) > 1e-9) {
+        candles = candles.map((c) => ({ ...c, o: c.o * k, h: c.h * k, l: c.l * k, c: c.c * k }));
+      }
+    }
+    const priceRef = poolPx > 0 ? poolPx : lastClose || 1;
     const profile = buildVolumeProfile(candles, step, priceRef);
     const geo = await fetchGeckoPool(address);
     let binLiquidity: { price: number; usd: number }[] = [];
@@ -1604,6 +1630,7 @@ export class Engine {
       poolVol24: pool?.vol24 ?? 0,
       binStep: pool?.binStep ?? 100,
       currentPrice: priceRef,
+      poolPrice: poolPx || priceRef,
       poolName: pool?.name ?? "",
       geo,
       supply,

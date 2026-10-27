@@ -16,12 +16,27 @@ import {
   Search,
   RefreshCw,
   Activity,
+  MoreHorizontal,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/format";
 import { ConnectWallet } from "@/components/wallet/connect-wallet";
 import { useEngineState } from "@/lib/api";
 import { toast } from "sonner";
+
+/** Мобильное меню: только 4 главных раздела. Остальное — в «Ещё» шапки. */
+const MOBILE_NAV = [
+  { href: "/", icon: LayoutDashboard, label: "Главная" },
+  { href: "/positions", icon: Layers, label: "Позиции" },
+  { href: "/analytics", icon: PieChart, label: "Аналитика" },
+  { href: "/settings", icon: Settings, label: "Кабинет" },
+];
+
+const MORE_NAV = [
+  { href: "/screener", icon: Radar, label: "Скринер" },
+  { href: "/swaps", icon: ArrowLeftRight, label: "Свапы" },
+  { href: "/journal", icon: NotebookText, label: "Журнал" },
+];
 
 const NAV = [
   { href: "/", icon: LayoutDashboard, label: "Обзор" },
@@ -190,6 +205,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <button className="hidden h-9 w-9 place-items-center rounded-full border border-white/[0.06] bg-white/[0.03] text-muted transition hover:text-ink sm:grid">
                 <Moon className="h-4 w-4" />
               </button>
+              <details className="relative lg:hidden">
+                <summary className="grid h-9 w-9 cursor-pointer list-none place-items-center rounded-full border border-white/[0.06] bg-white/[0.03] text-muted transition hover:text-ink [&::-webkit-details-marker]:hidden">
+                  <MoreHorizontal className="h-4 w-4" />
+                </summary>
+                <div className="absolute right-0 top-11 z-50 w-44 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171310] p-1 shadow-2xl">
+                  {MORE_NAV.map((item) => (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[12.5px] text-muted transition hover:bg-white/[0.05] hover:text-ink"
+                    >
+                      <item.icon className="h-4 w-4" strokeWidth={1.9} />
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              </details>
               <ConnectWallet compact />
               <div className="flex shrink-0 items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] py-1 pl-1 pr-2">
                 <div className="grid h-7 w-7 place-items-center rounded-full bg-gradient-to-br from-[#f7c58a] to-[#8a4a1a] text-[11px] font-bold text-[#2a1505]">
@@ -204,24 +236,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="min-w-0 overflow-x-hidden px-3 pb-24 pt-3 lg:px-5 lg:pb-8 lg:pt-4">{children}</main>
+        <main className="min-w-0 overflow-x-hidden px-3 pb-32 pt-3 lg:px-5 lg:pb-8 lg:pt-4">{children}</main>
       </div>
 
-      {/* ── Mobile bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 px-3 pb-3 lg:hidden" style={{ paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}>
-        <div className="glass flex items-center justify-between rounded-[22px] border border-white/[0.07] px-2 py-2">
-          {[...NAV, { href: "/settings", icon: Settings, label: "Настройки" }].map((item) => {
+      {/* затемнение под нижним меню: контент не «просвечивает» сквозь панель */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 h-32 bg-gradient-to-t from-black via-black/80 to-transparent lg:hidden" />
+
+      {/* ── Mobile bottom nav: 4 раздела, прижато к краю */}
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 px-2 lg:hidden"
+        style={{ paddingBottom: "max(4px, env(safe-area-inset-bottom))" }}
+      >
+        <div className="flex items-center justify-between rounded-t-[20px] border border-b-0 border-white/[0.07] bg-[#141110]/95 px-1.5 pb-1 pt-1.5 backdrop-blur-xl">
+          {MOBILE_NAV.map((item) => {
             const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex flex-1 flex-col items-center gap-1 rounded-[16px] py-1.5 transition-colors",
+                  "flex flex-1 flex-col items-center gap-1 rounded-[14px] py-1.5 transition-colors",
                   active ? "text-accent2" : "text-dim",
                 )}
               >
-                <item.icon className="h-[18px] w-[18px]" strokeWidth={active ? 2.2 : 1.8} />
+                <item.icon className="h-[19px] w-[19px]" strokeWidth={active ? 2.2 : 1.8} />
                 <span className="text-[9.5px] font-medium">{item.label}</span>
               </Link>
             );
