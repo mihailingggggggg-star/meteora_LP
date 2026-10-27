@@ -649,6 +649,9 @@ export default function PositionDetail() {
     const fees = (live?.feesAccrued ?? detail.fees_usd ?? 0) + (detail.claimed_usd ?? 0);
     const pnl = live ? live.pnl : (detail.pnl_usd ?? 0);
     const pnlPct = live ? live.pnlPctOfDeposit : (detail.pnl_pct ?? 0);
+    const pnlPctOfCapital = live
+      ? (live.pnlPctOfCapital ?? 0)
+      : ((detail.pnl_usd ?? 0) / Math.max(1e-9, detail.initial_capital ?? detail.capital ?? 1)) * 100;
     // для открытой позиции движок отдаёт разложение; у закрытой всё уже реализовано
     const realizedPnl = live ? (live.realizedPnl ?? 0) : (detail.pnl_usd ?? 0);
     const unrealizedPnl = live ? (live.unrealizedPnl ?? 0) : 0;
@@ -669,6 +672,7 @@ export default function PositionDetail() {
       rangePct,
       pnl,
       pnlPct,
+      pnlPctOfCapital,
       realizedPnl,
       unrealizedPnl,
       fees,
@@ -812,7 +816,7 @@ export default function PositionDetail() {
             {usd(view.pnl)}
           </div>
           <div className="num mt-2 text-[11.5px] text-muted">
-            {pct(view.pnlPct)} депозита · от {usd(view.initialCapital, 0)}
+            {pct(view.pnlPctOfCapital)} капитала · {pct(view.pnlPct)} депозита
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-white/[0.05] bg-white/[0.02] p-2.5">
             <div>

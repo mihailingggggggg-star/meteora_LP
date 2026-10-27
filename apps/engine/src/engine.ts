@@ -187,6 +187,7 @@ export class Engine {
     if (savedSettings) this.settings = { ...this.settings, ...savedSettings };
     this.restore();
     this.reconcile();
+    this.reconcileCash();
     this.seedLogs();
     journal(
       "BOOT",
@@ -311,6 +312,41 @@ export class Engine {
       }
     }
     if (this.positions.length) journal("BOOT", `восстановлено позиций: ${this.positions.length}`);
+  }
+
+  /**
+   * Сверка кэша. Инвариант:
+   *   капитал = депозит + Σ закрытых PnL + Σ открытых (снятые комиссии − вложено) − отложено
+   * Если после рестарта/старых багов кэш разошёлся — правим и пишем в журнал.
+   */
+  private reconcileCash() {
+    try {
+      const closed = db
+        .prepare(`SELECT COALESCE(SUM(pnl_usd),0) AS pnl FROM positions WHERE mode=? AND status='closed'`)
+        .get(this.mode) as any;
+      const openAdj = this.positions.reduce((sum, p) => sum + p.feesClaimed - p.initialCapital, 0);
+      const expected = this.deposit + Number(closed?.pnl ?? 0) + openAdj - this.banked;
+      const delta = expected - this.cash;
+      if (Math.abs(delta) <= 0.02) return;
+
+      // защита от абсурдных значений (например, если в базе старые расчёты)
+      if (Math.abs(delta) > Math.max(50, this.deposit)) {
+        journal(
+          "WARN",
+          `сверка капитала: кэш $${this.cash.toFixed(2)}, по расчёту $${expected.toFixed(2)} — разница слишком большая, не правлю`,
+        );
+        return;
+      }
+
+      journal(
+        "WARN",
+        `сверка капитала: кэш $${this.cash.toFixed(2)} → $${expected.toFixed(2)} (разница ${delta >= 0 ? "+" : ""}$${delta.toFixed(2)})`,
+      );
+      this.cash = expected;
+      this.persist();
+    } catch {
+      /* сверка не должна ронять запуск */
+    }
   }
 
   private reconcile() {
@@ -1094,6 +1130,7 @@ export class Engine {
       pos.feesClaimed += claimed;
       pos.feesAccrued = 0;
       this.cash += claimed;
+      this.persist(); // без этого после рестарта кэш откатывался и капитал был ниже PnL
       pos.claimedAt = now;
       db.prepare(`UPDATE positions SET fees_usd=?, claimed_usd=?, last_claim_at=? WHERE id=?`).run(0, pos.feesClaimed, now, pos.id);
       event(pos.id, "CLAIM", { claimed });
@@ -1422,6 +1459,49 @@ export class Engine {
       unrealized,
       trades: Number(closed?.n ?? 0),
       series: series.map((r) => ({ ts: r.ts, equity: r.equity })),
+    };
+  }
+
+  /** Аудит капитала: все слагаемые и расхождение. */
+  audit() {
+    const eq = this.getEquity();
+    const closed = db
+      .prepare(
+        `SELECT COALESCE(SUM(pnl_usd),0) AS pnl, COALESCE(SUM(fees_usd),0) AS fees, COALESCE(SUM(claimed_usd),0) AS claimed, COUNT(*) AS n
+         FROM positions WHERE mode=? AND status='closed'`,
+      )
+      .get(this.mode) as any;
+    const open = this.positions.map((p) => {
+      const dto = this.positionDto(p);
+      return {
+        id: p.id,
+        name: p.pool.name,
+        capital: p.initialCapital,
+        value: dto?.value ?? 0,
+        feesAccrued: p.feesAccrued,
+        feesClaimed: p.feesClaimed,
+        pnl: dto?.pnl ?? 0,
+        realized: dto?.realizedPnl ?? 0,
+        unrealized: dto?.unrealizedPnl ?? 0,
+      };
+    });
+    const openPnl = open.reduce((s, p) => s + p.pnl, 0);
+    const expected = this.deposit + Number(closed?.pnl ?? 0) + openPnl;
+    return {
+      mode: this.mode,
+      deposit: this.deposit,
+      cash: eq.cash,
+      inPositions: eq.inPositions,
+      pendingFees: eq.pendingFees,
+      banked: eq.banked,
+      equity: eq.equity,
+      closedPnl: Number(closed?.pnl ?? 0),
+      closedTrades: Number(closed?.n ?? 0),
+      closedFees: Number(closed?.fees ?? 0) + Number(closed?.claimed ?? 0),
+      openPnl,
+      open,
+      expectedEquity: expected,
+      delta: eq.equity - expected,
     };
   }
 

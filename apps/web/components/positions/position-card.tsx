@@ -104,7 +104,9 @@ export function PositionCard({ p, index = 0, onClose }: { p: any; index?: number
               {up ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
               {usd(p.pnl ?? 0)}
             </div>
-            <div className={`num text-[10.5px] ${up ? "text-mint/70" : "text-danger/70"}`}>{pct(p.pnlPctOfDeposit ?? 0)} депозита</div>
+            <div className={`num text-[10.5px] ${up ? "text-mint/70" : "text-danger/70"}`}>
+              {pct(p.pnlPctOfCapital ?? p.pnlPctOfDeposit ?? 0)} капитала
+            </div>
           </div>
         </div>
 
