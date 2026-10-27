@@ -285,11 +285,13 @@ export class Engine {
       merged.maxHoldHours = Number(merged.maxHoldHours) || env.strategy.maxHoldHours || 24;
       merged.rangeBreakMinutes = Number(merged.rangeBreakMinutes) || env.strategy.rangeBreakMinutes || 10;
       this.settings = merged;
-      // миграция: раньше по умолчанию был 1 слот — с новой логикой ротации нужно до 3
-      if (this.settings.maxPositions < 2) {
-        this.settings.maxPositions = 3;
-        journal("BOOT", "миграция: слотов 1 → 3 (ротация на резервной части депозита)");
-      }
+    }
+    // миграция: раньше по умолчанию был 1 слот — с новой логикой ротации нужно до 3.
+    // Проверяем ВНЕ блока сохранённых настроек: значение могло прийти и из .env (MAX_POSITIONS=1).
+    if (this.settings.maxPositions < 2) {
+      this.settings.maxPositions = 3;
+      setSetting("engine.settings", this.settings);
+      journal("BOOT", "миграция: слотов 1 → 3 (ротация на резервной части депозита)");
     }
     this.restore();
     this.reconcile();

@@ -16,7 +16,7 @@
 | Python | 3.10.12 (esmar-bot — свой venv, prometey — свой venv) |
 | Веб-сервер | Caddy: `/etc/caddy/Caddyfile` + `solana_swing.caddy`, admin `127.0.0.1:2019` |
 | Docker | нет |
-| Sudo | `myuser` — по паролю; доступ goose — по ключу `~/.ssh/meteora_ops` (без sudo) |
+| Sudo | `myuser` — по паролю; доступ goose — ключ `~/.ssh/meteora_ops`, sudo через `/etc/sudoers.d/90-goose-ops` (удалить после работ) |
 
 ## Порты
 
@@ -27,11 +27,10 @@
 | 2019 | Caddy admin | 127.0.0.1 |
 | 3000 | **meteora-web** (Next.js) | `*` (доступ только через Caddy) |
 | 8789 | **meteora-engine** (API, требует `ENGINE_TOKEN`) | 127.0.0.1 |
-| 8787, 8788 | **pump_bot** (автотрейд Bybit) — *удаляется* | 127.0.0.1 |
+| ~~8787, 8788~~ | освобождены (были у pump_bot, удалён 27.10.2026) | — |
 | 8877 | **prometey** (скринер API) | 127.0.0.1 |
 | 8790 | **solana_swing** (vite preview) | 127.0.0.1 |
-| 20241 | cloudflared #1 → `:8788` (pump_bot) — *удаляется* | 127.0.0.1 |
-| 20242 | cloudflared #2 → `:8877` (prometey) — **оставить** | 127.0.0.1 |
+| 20241 | cloudflared `wheel-tunnel.service` → `:8877` (prometey wheel_api) | 127.0.0.1 |
 | 53 / 631 | systemd-resolved / cups | — |
 
 Наружу открыты только **22, 80, 443**.
@@ -41,7 +40,6 @@
 | Домен | Куда | Проект |
 |---|---|---|
 | `lp.95-179-167-90.sslip.io` | `127.0.0.1:3000` + HSTS/CSP/X-Frame-Options | **meteora** |
-| `95-179-167-90.sslip.io` | `127.0.0.1:8788` | **pump_bot** — *блок удаляется вместе с ботом* |
 | `solana.95-179-167-90.sslip.io` | `127.0.0.1:8790` (из `solana_swing.caddy`) | **solana_swing** |
 
 ## Проекты
@@ -70,10 +68,13 @@
 - **Не трогать.** Перезапуск: `pm2 restart prometey && pm2 save`
 - `/opt/google/chrome` (416 МБ) используется скринером для рендера картинок — **не удалять**
 
-### 4. pump_bot (автотрейд Bybit) — `/home/myuser/prometey/autotrade_bot` — **удалено 27.10.2026**
+### 4. pump_bot (автотрейд Bybit) — `/home/myuser/prometey/autotrade_bot` — **удалён 27.10.2026**
 - Юнит `pump_bot` (`User=myuser`), порты 8787 + 8788, cloudflared #1 → 8788, домен `95-179-167-90.sslip.io` → 8788
 - Данные: `data/autotrade.db` 606 МБ + бэкап 104 МБ, venv 272 МБ
-- Бэкап перед удалением: `/home/myuser/backups/autotrade_bot-2026-10-27.tar.gz`
+- Бэкапы: `/home/myuser/backups/autotrade-2026-10-27.db` (чистый дамп, 605 МБ, 15 таблиц) и
+  `autotrade_bot-2026-10-27-final.tar.gz` (код+данные, 99 МБ)
+- Дополнительно снято: юнит `webapi_tunnel.service` (его туннель на 8788), cloudflared #1,
+  Caddy-блок `95-179-167-90.sslip.io`. Порты 8787/8788 свободны.
 - Замечание: офлайн-тулза `prometey/backtest/` ссылается на `autotrade_bot` путями (`BOT_DIR`, `AUTOTRADE`) — после удаления бэктест запускаться не будет; живой скринер от этого не зависит (проверено: импортов нет)
 
 ### 5. solana_swing — `/opt/solana_swing`
@@ -85,9 +86,9 @@
 
 | Что | Объём | Решение |
 |---|---|---|
-| `journald` | 384 МБ | `SystemMaxUse=200M` + `journalctl --vacuum-size=200M` |
-| `/etc/caddy/Caddyfile.bak.*` | 16 файлов | оставлять последние 3 |
-| `.run/*.log` meteora | append без ротации | logrotate 50 МБ × 3 |
+| `journald` | ✅ сделано: `SystemMaxUse=200M`, сейчас 32 МБ |
+| `/etc/caddy/Caddyfile.bak.*` | ✅ оставлены последние 3 |
+| `.run/*.log` meteora | ✅ logrotate `/etc/logrotate.d/meteora` (50 МБ × 3) |
 | `prometey/cloudflared.deb` | 19 МБ | можно удалить (пакет уже установлен) |
 | `/var/log/auth.log` | 11 МБ | настроен logrotate — ок |
 
@@ -99,3 +100,5 @@
 4. **Системный node v12 не использовать** — только `/opt/node24/bin/node`.
 5. **prometey и chrome не трогать** — на них держится скринер.
 6. Все правки в Caddy — только через `caddy validate` + `systemctl reload caddy` (иначе останетесь без HTTPS).
+7. `MAX_POSITIONS=3` — в `.env` сервера; код дополнительно поднимает 1 → 3 при старте (миграция вне блока сохранённых настроек).
+8. Полная карта сервера продублирована на самом сервере: `/opt/SERVER.md`.
