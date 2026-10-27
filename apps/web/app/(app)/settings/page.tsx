@@ -343,18 +343,58 @@ export default function SettingsPage() {
                     onChange={(v) => set({ maxDailyLossPct: v })}
                   />
                   <Field
-                    label="Досрочный выход по ATR"
-                    hint="если волатильность разгоняется выше — выходим"
-                    value={form.earlyExitAtrPct}
-                    min={2}
-                    max={8}
-                    step={0.1}
-                    suffix="%"
-                    onChange={(v) => set({ earlyExitAtrPct: v })}
+                    label="Проверка пула внутри позиции"
+                    hint="как часто пересматриваем ATR, TVL и оборот (жёсткие фильтры входа)"
+                    value={form.healthCheckMinutes ?? 5}
+                    min={1}
+                    max={30}
+                    step={1}
+                    suffix=" мин"
+                    onChange={(v) => set({ healthCheckMinutes: v })}
                   />
                   <Field
-                    label="Досрочный выход по обороту"
-                    hint="если V/TVL падает ниже — пул остыл"
+                    label="Подтверждений до выхода по фильтрам"
+                    hint="сколько проверок подряд должны провалиться (защита от одного плохого ответа API)"
+                    value={form.filterBreachChecks ?? 2}
+                    min={1}
+                    max={5}
+                    step={1}
+                    suffix=""
+                    onChange={(v) => set({ filterBreachChecks: v })}
+                  />
+                  <Field
+                    label="Допуск по ATR перед выходом"
+                    hint="ATR может превысить лимит входа на этот процент — дальше выходим"
+                    value={form.atrExitTolerancePct ?? 20}
+                    min={0}
+                    max={100}
+                    step={5}
+                    suffix="%"
+                    onChange={(v) => set({ atrExitTolerancePct: v })}
+                  />
+                  <Field
+                    label="Правка диапазона при изменении ATR"
+                    hint="если целевой диапазон отличается больше чем на эту долю — перестраиваем сетку"
+                    value={form.rangeAdjustMinPct ?? 20}
+                    min={5}
+                    max={100}
+                    step={5}
+                    suffix="%"
+                    onChange={(v) => set({ rangeAdjustMinPct: v })}
+                  />
+                  <Field
+                    label="Пауза между правками диапазона"
+                    hint="не чаще одного сдвига сетки за это время"
+                    value={form.rangeAdjustCooldownMin ?? 30}
+                    min={5}
+                    max={240}
+                    step={5}
+                    suffix=" мин"
+                    onChange={(v) => set({ rangeAdjustCooldownMin: v })}
+                  />
+                  <Field
+                    label="«Остывание» по обороту (выход)"
+                    hint="если V/TVL падает ниже — пул остыл, выходим"
                     value={form.earlyExitTurnover}
                     min={0.2}
                     max={3}
@@ -362,6 +402,7 @@ export default function SettingsPage() {
                     suffix="x"
                     onChange={(v) => set({ earlyExitTurnover: v })}
                   />
+
                   <Field
                     label="Фиксация прибыли на вехе"
                     hint="доля прибыли, которая откладывается при росте депозита"

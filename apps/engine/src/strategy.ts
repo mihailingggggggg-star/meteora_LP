@@ -1,5 +1,6 @@
-import type { Pool } from "./meteora.js";
+import { splitPair, type Pool } from "./meteora.js";
 import type { Candle } from "./market.js";
+import { priceStats } from "./math.js";
 import type { BinLiquidity } from "./chain.js";
 
 /** Свеча 30m: ATR(14) — средний размах свечи в процентах. */
@@ -96,8 +97,8 @@ export function buildBalancedPlan(opts: {
   if (turnover24 < settings.minTurnover) return null;
   if (!atrPct || atrPct > settings.maxAtrPct) return null;
 
-  // диапазон: 1.5 × ATR, но не шире maxRange и не уже 1%
-  const halfRange = Math.min(settings.maxRangePct, Math.max(1.0, settings.rangeAtrMult * atrPct)) / 100;
+  // диапазон: 1.5 × ATR, но не шире maxRange и не уже 1% (та же формула, что и при пересмотре)
+  const halfRange = targetHalfRange(atrPct, settings);
   const priceRef = candles30m[candles30m.length - 1]?.c || pool.currentPrice;
   const step = Math.max(0.0005, pool.binStep / 10_000);
 
@@ -328,4 +329,240 @@ export function decideRangeAction(opts: {
   if (!out) return outSince > 0 ? "back_in" : "none";
   if (outSince === 0) return "mark_out";
   return expired ? "rebalance" : "hold";
+}
+
+/**
+ * Целевая половина диапазона из текущего ATR.
+ * Одна формула и для входа, и для ребаланса, и для проактивной правки сетки:
+ * диапазон сжимается/расширяется вместе с волатильностью, но не выходит за maxRangePct
+ * и не становится уже 1%.
+ */
+export function targetHalfRange(
+  atrPct: number,
+  settings: Pick<StrategySettings, "rangeAtrMult" | "maxRangePct">,
+): number {
+  const raw = settings.rangeAtrMult * (atrPct > 0 ? atrPct : 0);
+  return Math.min(settings.maxRangePct, Math.max(1.0, raw)) / 100;
+}
+
+export type FilterCheck = {
+  key: string;
+  label: string;
+  ok: boolean;
+  value: number;
+  limit: number;
+  unit: string;
+  severity: "hard" | "soft";
+  note?: string;
+};
+
+export type PoolHealth = {
+  verdict: "ok" | "soft" | "hard";
+  checks: FilterCheck[];
+  failed: FilterCheck[];
+  warn: FilterCheck[];
+  atrPct: number;
+  atrAtEntry: number;
+  atrDriftPct: number;
+  turnover24: number;
+  turnover1h: number;
+  tvl: number;
+  vol1h: number;
+  rangePctNow: number;
+  rangePctTarget: number;
+  rangeDriftPct: number;
+  inRangeShare: number;
+  change24h: number;
+  /** короткая подпись состояния — для журнала и дедупликации записей */
+  signature: string;
+};
+
+/**
+ * Пересмотр пула теми же жёсткими фильтрами, что и на входе.
+ *
+ * Зачем: позиция живёт часами, а рынок меняется — ATR растёт, оборот падает,
+ * TVL утекает. Раньше бот держал позицию «по инерции» и ребалансировал вслепую.
+ * Теперь перед каждым ребалансом (и периодически в тике) пул проверяется заново:
+ *  • hard — условия входа больше не выполняются → выходим (EXIT_FILTERS);
+ *  • soft — работать можно, но сетку стоит поправить (RANGE_ADJUST);
+ *  • ok — всё как при входе.
+ *
+ * Допуск по ATR (atrTolerancePct) нужен, чтобы не выходить из-за одного
+ * «шумного» дня: выход происходит, когда ATR превысил лимит входа с запасом.
+ */
+export function evaluatePoolHealth(opts: {
+  pool: Pool;
+  candles30m: Candle[];
+  settings: StrategySettings & {
+    minVol1h?: number;
+    minAgeHours?: number;
+    minHolders?: number;
+    maxTurnover?: number;
+  };
+  /** ATR на момент входа/последнего ребаланса — база для оценки дрейфа */
+  atrAtEntry: number;
+  /** текущая половина диапазона */
+  rangePct: number;
+  atrTolerancePct?: number;
+  now?: number;
+}): PoolHealth {
+  const { pool, candles30m, settings } = opts;
+  const now = opts.now ?? Date.now();
+  const checks: FilterCheck[] = [];
+  const add = (c: FilterCheck) => checks.push(c);
+
+  const haveCandles = candles30m.length >= 16;
+  const atrPct = haveCandles ? computeAtr(candles30m, 14) : 0;
+  const turnover24 = pool.tvl > 0 ? pool.vol24 / pool.tvl : 0;
+  const turnover1h = pool.tvl > 0 ? pool.vol1h / pool.tvl : 0;
+  const stats = haveCandles ? priceStats(candles30m) : { change24h: 0, atrPct: 0, rug: false };
+  const token = splitPair(pool).token;
+
+  const tol = Math.max(0, opts.atrTolerancePct ?? 0) / 100;
+  const atrLimit = settings.maxAtrPct * (1 + tol);
+
+  add({
+    key: "data",
+    label: "Данные свечей",
+    ok: haveCandles && atrPct > 0,
+    value: candles30m.length,
+    limit: 16,
+    unit: "свечей",
+    severity: "hard",
+    note: haveCandles ? undefined : "нет свечей 30m — оценивать нечем",
+  });
+  add({
+    key: "tvl",
+    label: "TVL пула",
+    ok: pool.tvl >= settings.minPoolTvl,
+    value: pool.tvl,
+    limit: settings.minPoolTvl,
+    unit: "$",
+    severity: "hard",
+  });
+  add({
+    key: "turnover",
+    label: "Оборот Vol/TVL",
+    ok: turnover24 >= settings.minTurnover,
+    value: turnover24,
+    limit: settings.minTurnover,
+    unit: "x",
+    severity: "hard",
+  });
+  add({
+    key: "atr",
+    label: "ATR(30m)",
+    ok: atrPct <= atrLimit,
+    value: atrPct,
+    limit: atrLimit,
+    unit: "%",
+    severity: "hard",
+    note:
+      atrPct > settings.maxAtrPct
+        ? `выше лимита входа ${settings.maxAtrPct}% (допуск ${Math.round((opts.atrTolerancePct ?? 0) * 10) / 10}% → выход при >${atrLimit.toFixed(2)}%)`
+        : undefined,
+  });
+  if ((settings.minVol1h ?? 0) > 0) {
+    add({
+      key: "vol1h",
+      label: "Объём за час",
+      ok: pool.vol1h >= settings.minVol1h!,
+      value: pool.vol1h,
+      limit: settings.minVol1h!,
+      unit: "$",
+      severity: "hard",
+    });
+  }
+  if ((settings.minHolders ?? 0) > 0) {
+    add({
+      key: "holders",
+      label: "Держатели токена",
+      ok: (token.holders ?? 0) >= settings.minHolders!,
+      value: token.holders ?? 0,
+      limit: settings.minHolders!,
+      unit: "чел.",
+      severity: "hard",
+    });
+  }
+  if ((settings.minAgeHours ?? 0) > 0) {
+    add({
+      key: "age",
+      label: "Возраст пула",
+      ok: now - pool.createdAt >= settings.minAgeHours! * 3600_000,
+      value: (now - pool.createdAt) / 3600_000,
+      limit: settings.minAgeHours!,
+      unit: "ч",
+      severity: "hard",
+    });
+  }
+  add({
+    key: "rug",
+    label: "Падение за сутки",
+    ok: stats.change24h > -45,
+    value: stats.change24h,
+    limit: -45,
+    unit: "%",
+    severity: "hard",
+    note: stats.rug ? "rug-фильтр: цена упала больше 45%" : undefined,
+  });
+
+  // ── мягкие сигналы: работаем, но сетку пора править
+  const hotCap = Math.min(60, (settings.maxTurnover ?? 60) * 1.5);
+  add({
+    key: "heat",
+    label: "Перегрев оборота",
+    ok: turnover24 <= hotCap,
+    value: turnover24,
+    limit: hotCap,
+    unit: "x",
+    severity: "soft",
+    note: "оборот аномально высокий — риск резкого слива ликвидности",
+  });
+  const inRangeShare = haveCandles ? volumeShareInRange(candles30m, pool.currentPrice, opts.rangePct) : 1;
+  add({
+    key: "inRange",
+    label: "Объём внутри коридора",
+    ok: inRangeShare >= 0.45,
+    value: inRangeShare * 100,
+    limit: 45,
+    unit: "%",
+    severity: "soft",
+    note: "мало объёма внутри диапазона — сетка слишком узкая",
+  });
+
+  const failed = checks.filter((c) => !c.ok && c.severity === "hard");
+  const warn = checks.filter((c) => !c.ok && c.severity === "soft");
+  const verdict: PoolHealth["verdict"] = failed.length ? "hard" : warn.length ? "soft" : "ok";
+
+  const rangePctTarget = targetHalfRange(atrPct, settings);
+  const atrDriftPct = opts.atrAtEntry > 0 ? ((atrPct - opts.atrAtEntry) / opts.atrAtEntry) * 100 : 0;
+  const rangeDriftPct = opts.rangePct > 0 ? ((rangePctTarget - opts.rangePct) / opts.rangePct) * 100 : 0;
+
+  const signature = [
+    verdict,
+    ...failed.map((c) => c.key),
+    ...warn.map((c) => c.key),
+    `atr${atrPct.toFixed(1)}`,
+    `rng${(rangePctTarget * 100).toFixed(1)}`,
+  ].join("|");
+
+  return {
+    verdict,
+    checks,
+    failed,
+    warn,
+    atrPct,
+    atrAtEntry: opts.atrAtEntry,
+    atrDriftPct,
+    turnover24,
+    turnover1h,
+    tvl: pool.tvl,
+    vol1h: pool.vol1h,
+    rangePctNow: opts.rangePct,
+    rangePctTarget,
+    rangeDriftPct,
+    inRangeShare,
+    change24h: stats.change24h,
+    signature,
+  };
 }

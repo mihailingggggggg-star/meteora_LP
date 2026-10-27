@@ -77,7 +77,10 @@ export type JournalType =
   | "EXIT_FLOW"
   | "DUPLICATE"
   | "MANUAL"
-  | "LIVE";
+  | "LIVE"
+  | "HEALTH"
+  | "EXIT_FILTERS"
+  | "RANGE_ADJUST";
 
 /** Компактный контекст: убираем пустые поля и округляем числа — журнал не должен пухнуть. */
 function compactCtx(value: unknown, depth = 0): unknown {

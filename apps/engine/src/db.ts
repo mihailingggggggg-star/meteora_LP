@@ -216,3 +216,17 @@ try {
 } catch {
   /* колонка уже есть */
 }
+
+// ── динамический диапазон: с каким ATR и какой сеткой вошли (для пересмотра)
+for (const ddl of [
+  `ALTER TABLE positions ADD COLUMN entry_atr_pct REAL`,
+  `ALTER TABLE positions ADD COLUMN entry_range_pct REAL`,
+  `ALTER TABLE positions ADD COLUMN range_adjusts INTEGER DEFAULT 0`,
+  `ALTER TABLE positions ADD COLUMN last_range_adjust_at INTEGER`,
+]) {
+  try {
+    db.exec(ddl);
+  } catch {
+    /* колонка уже есть */
+  }
+}

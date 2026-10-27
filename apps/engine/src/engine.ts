@@ -16,6 +16,8 @@ import {
   volumeShareInRange,
   type StrategyPlan,
   type StrategySettings,
+  evaluatePoolHealth,
+  targetHalfRange,
 } from "./strategy.js";
 
 export type Mode = "demo" | "live";
@@ -44,6 +46,23 @@ type RtPos = {
   /** средняя цена входа токеновой части относительно центра сетки */
   avgEntryRel: number;
   rangePct: number;
+  /** ATR на момент входа/последнего ребаланса — база для оценки дрейфа волатильности */
+  entryAtrPct: number;
+  /** половина диапазона на момент входа/последнего ребаланса */
+  entryRangePct: number;
+  /** сколько раз сетку сдвигали из-за изменения ATR (не путать с ребалансами по пробою) */
+  rangeAdjusts: number;
+  /** когда последний раз пересматривали пул */
+  lastHealthAt: number;
+  /** подпись последнего состояния — чтобы не писать одинаковые строки в журнал */
+  lastHealthKey: string;
+  /** сколько проверок подряд фильтры не проходят */
+  breachCount: number;
+  /** ждём момента, чтобы перестроить сетку под новый ATR */
+  rangeNeedsAdjust: boolean;
+  lastRangeAdjustAt: number;
+  /** последний снимок пула из API — чтобы не запрашивать повторно в том же тике */
+  freshPool?: Pool | null;
   bins: RtBin[];
   filled: Set<number>;
   feesAccrued: number;
@@ -135,6 +154,11 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   rangeBreakMinutes: { min: 1, max: 240 },
   claimThresholdPct: { min: 0, max: 100 },
   scanIntervalSeconds: { min: 15, max: 3600 },
+  atrExitTolerancePct: { min: 0, max: 200 },
+  healthCheckMinutes: { min: 1, max: 120 },
+  filterBreachChecks: { min: 1, max: 10, int: true },
+  rangeAdjustMinPct: { min: 5, max: 200 },
+  rangeAdjustCooldownMin: { min: 5, max: 720 },
   exitCostPct: { min: 0, max: 10 },
 };
 
@@ -193,6 +217,12 @@ export class Engine {
     claimIntervalHours: number;
     maxHoldHours: number;
     rangeBreakMinutes: number;
+    maxTurnover: number;
+    atrExitTolerancePct: number;
+    healthCheckMinutes: number;
+    filterBreachChecks: number;
+    rangeAdjustMinPct: number;
+    rangeAdjustCooldownMin: number;
   } = {
     maxAtrPct: env.strategy.maxAtrPct,
     minTurnover: env.strategy.minTurnover,
@@ -219,6 +249,12 @@ export class Engine {
     claimIntervalHours: env.strategy.claimIntervalHours ?? 2,
     maxHoldHours: env.strategy.maxHoldHours,
     rangeBreakMinutes: env.strategy.rangeBreakMinutes ?? 10,
+    maxTurnover: env.strategy.maxTurnover ?? 40,
+    atrExitTolerancePct: env.strategy.atrExitTolerancePct ?? 20,
+    healthCheckMinutes: env.strategy.healthCheckMinutes ?? 5,
+    filterBreachChecks: env.strategy.filterBreachChecks ?? 2,
+    rangeAdjustMinPct: env.strategy.rangeAdjustMinPct ?? 20,
+    rangeAdjustCooldownMin: env.strategy.rangeAdjustCooldownMin ?? 30,
   };
 
   /** Сколько позиций держим одновременно: 1 до $10k, дальше — диверсификация. */
@@ -284,6 +320,19 @@ export class Engine {
         minPoolTvl: this.settings.minPoolTvl,
         minTxns24h: this.settings.minTxns24h,
         minHolders: this.settings.minHolders,
+        minVol1h: this.settings.minVol1h,
+        minAgeHours: this.settings.minAgeHours,
+        maxTurnover: this.settings.maxTurnover,
+        // выход по фильтрам: допуск по ATR и число подтверждений подряд
+        atrExitTolerancePct: this.settings.atrExitTolerancePct,
+        filterBreachChecks: this.settings.filterBreachChecks,
+      },
+      rangeDynamics: {
+        healthCheckMinutes: this.settings.healthCheckMinutes,
+        rangeAtrMult: this.settings.rangeAtrMult,
+        maxRangePct: this.settings.maxRangePct,
+        rangeAdjustMinPct: this.settings.rangeAdjustMinPct,
+        rangeAdjustCooldownMin: this.settings.rangeAdjustCooldownMin,
       },
       settings: this.settings,
     });
@@ -303,6 +352,12 @@ export class Engine {
         maxDailyLossPct: this.settings.maxDailyLossPct,
         maxLossPerTradePct: this.settings.maxLossPerTradePct,
         maxAtrPct: this.settings.maxAtrPct,
+        atrExitTolerancePct: this.settings.atrExitTolerancePct,
+        filterBreachChecks: this.settings.filterBreachChecks,
+        healthCheckMinutes: this.settings.healthCheckMinutes,
+        rangeAtrMult: this.settings.rangeAtrMult,
+        rangeAdjustMinPct: this.settings.rangeAdjustMinPct,
+        rangeAdjustCooldownMin: this.settings.rangeAdjustCooldownMin,
         minTurnover: this.settings.minTurnover,
         claimIntervalHours: this.settings.claimIntervalHours,
         profitTakePct: this.settings.profitTakePct,
@@ -395,6 +450,15 @@ export class Engine {
           entryPrice: row.entry_price,
           avgEntryRel: 1,
           rangePct: row.range_pct ?? 0.025,
+          entryAtrPct: row.entry_atr_pct ?? row.atr_pct ?? 0,
+          entryRangePct: row.entry_range_pct ?? row.range_pct ?? 0.025,
+          rangeAdjusts: row.range_adjusts ?? 0,
+          lastHealthAt: 0,
+          lastHealthKey: "",
+          breachCount: 0,
+          rangeNeedsAdjust: false,
+          lastRangeAdjustAt: row.last_range_adjust_at ?? 0,
+          freshPool: null,
           bins,
           filled: new Set<number>(),
           feesAccrued: row.fees_usd ?? 0,
@@ -931,7 +995,9 @@ export class Engine {
         0,
       );
     const id = Number(info.lastInsertRowid);
-    db.prepare(`UPDATE positions SET initial_capital = ?, friction_usd = 0 WHERE id = ?`).run(capital, id);
+    db.prepare(
+      `UPDATE positions SET initial_capital = ?, friction_usd = 0, entry_atr_pct = ?, entry_range_pct = ? WHERE id = ?`,
+    ).run(capital, plan.atrPct, plan.rangePct, id);
 
     const bins: RtBin[] = plan.bins.map((b) => ({
       k: b.k,
@@ -960,6 +1026,15 @@ export class Engine {
       entryPrice,
       avgEntryRel: 1,
       rangePct: plan.rangePct,
+      entryAtrPct: plan.atrPct,
+      entryRangePct: plan.rangePct,
+      rangeAdjusts: 0,
+      lastHealthAt: 0,
+      lastHealthKey: "",
+      breachCount: 0,
+      rangeNeedsAdjust: false,
+      lastRangeAdjustAt: 0,
+      freshPool: null,
       bins,
       filled: new Set<number>(bins.filter((b) => b.priceRel <= 1).map((b) => b.k)),
       feesAccrued: 0,
@@ -1063,33 +1138,166 @@ export class Engine {
   }
 
   /** Ребаланс: фиксируем стоимость, платим friction, строим новую сетку от текущей цены. */
-  private async rebalance(pos: RtPos, price: number) {
+  /**
+   * Пересмотр позиции и перестройка сетки.
+   *
+   * Перед ребалансом пул анализируется заново — теми же жёсткими фильтрами, что и на входе:
+   *  • фильтры больше не проходят → выходим (EXIT_FILTERS), а не «чиним» безнадёжный пул;
+   *  • проходят → строим новую сетку под свежий ATR: диапазон = rangeAtrMult × ATR
+   *    в границах [1%, maxRangePct], капитал — по актуальному риск-лимиту и ликвидности коридора.
+   *
+   * cause: RANGE_BREAK — цена вышла за границу и не вернулась;
+   *        RANGE_ADJUST — ATR ушёл, и сетка перестала соответствовать волатильности.
+   */
+  private async rebalance(pos: RtPos, price: number, cause: "RANGE_BREAK" | "RANGE_ADJUST" = "RANGE_BREAK") {
+    const now = Date.now();
     const rel = price / pos.entryPrice;
+
+    // ── 1. свежие данные пула (не «на память» с момента входа)
+    const freshPool = await fetchPool(pos.pool.address).catch(() => null);
+    if (!freshPool) {
+      journal(
+        "WARN",
+        `pos#${pos.id}: пул не отдал данные — ${cause === "RANGE_ADJUST" ? "правка диапазона отложена" : "ребаланс отложен"}`,
+        { position: pos.id, cause },
+      );
+      return;
+    }
+    const candles = this.alignCandles(await this.getCandles(pos.pool.address, "30m"), freshPool.currentPrice);
+    const health = evaluatePoolHealth({
+      pool: freshPool,
+      candles30m: candles,
+      settings: this.settings,
+      atrAtEntry: pos.entryAtrPct,
+      rangePct: pos.rangePct,
+      atrTolerancePct: this.settings.atrExitTolerancePct,
+      now,
+    });
+
+    const scope = cause === "RANGE_ADJUST" ? "правкой диапазона" : "ребалансом";
+    journal(
+      "HEALTH",
+      `pos#${pos.id} ${pos.tokenSymbol} пересмотр перед ${scope}: ${health.verdict} · ATR ${health.atrPct.toFixed(2)}% (вход ${health.atrAtEntry.toFixed(2)}%, ${health.atrDriftPct >= 0 ? "+" : ""}${health.atrDriftPct.toFixed(0)}%) · диапазон ±${(health.rangePctNow * 100).toFixed(2)}% → цель ±${(health.rangePctTarget * 100).toFixed(2)}% · оборот ${health.turnover24.toFixed(2)}x · TVL $${Math.round(health.tvl)}`,
+      {
+        position: pos.id,
+        cause,
+        verdict: health.verdict,
+        atrPct: health.atrPct,
+        atrAtEntry: health.atrAtEntry,
+        atrDriftPct: health.atrDriftPct,
+        rangePctNow: health.rangePctNow,
+        rangePctTarget: health.rangePctTarget,
+        rangeDriftPct: health.rangeDriftPct,
+        turnover24: health.turnover24,
+        tvl: health.tvl,
+        inRangeShare: health.inRangeShare,
+        failed: health.failed.map((c) => `${c.key}=${Number(c.value.toFixed(2))}${c.unit} при лимите ${Number(c.limit.toFixed(2))}${c.unit}`),
+        warn: health.warn.map((c) => c.key),
+      },
+    );
+    pos.lastHealthAt = now;
+    pos.lastHealthKey = health.signature;
+
+    // ── 2. условия входа больше не выполняются → выходим, ребаланс не поможет
+    const failText = health.failed
+      .map((c) => `${c.label} ${Number(c.value.toFixed(2))}${c.unit} (лимит ${Number(c.limit.toFixed(2))}${c.unit})`)
+      .join("; ");
+    if (health.verdict === "hard") {
+      journal(
+        "EXIT_FILTERS",
+        `pos#${pos.id} ${pos.tokenSymbol}: условия входа больше не выполняются — ${failText} → выходим вместо ${scope}`,
+        {
+          position: pos.id,
+          cause,
+          price,
+          rel,
+          atrPct: health.atrPct,
+          atrAtEntry: health.atrAtEntry,
+          turnover24: health.turnover24,
+          tvl: health.tvl,
+          failed: health.failed.map((c) => ({ key: c.key, value: c.value, limit: c.limit, unit: c.unit })),
+        },
+      );
+      this.blockedPools.set(pos.pool.address, now + 60 * 60_000);
+      await this.closePositionById(pos.id, "EXIT_FILTERS", price);
+      return;
+    }
+
+    // ── 3. новая сетка из свежих ATR / ликвидности / комиссий
+    const binData =
+      (await readBinLiquidity(freshPool, 0.08).catch(() => null)) ??
+      ({ activePrice: freshPool.currentPrice, bins: [], source: "estimate" } as const);
+
+    const plan = buildBalancedPlan({
+      pool: freshPool,
+      candles30m: candles,
+      binData: { activePrice: binData.activePrice, bins: [...binData.bins], source: binData.source },
+      deposit: this.deposit,
+      settings: this.settings,
+    });
+    if (!plan) {
+      journal(
+        "EXIT_FILTERS",
+        `pos#${pos.id} ${pos.tokenSymbol}: после пересмотра капитал/риск не сходятся (ATR ${health.atrPct.toFixed(2)}%, целевой диапазон ±${(health.rangePctTarget * 100).toFixed(2)}%) → выход`,
+        { position: pos.id, cause, price, rel, atrPct: health.atrPct, rangePctTarget: health.rangePctTarget },
+      );
+      this.blockedPools.set(pos.pool.address, now + 60 * 60_000);
+      await this.closePositionById(pos.id, "EXIT_FILTERS", price);
+      return;
+    }
+
+    // ── 4. применяем: капитал, диапазон, распределение, счётчики
     const { value } = positionValue(pos.bins, rel);
     const frictionUsd = value * (this.settings.frictionPct / 100);
-    const newCapital = Math.max(0, value - frictionUsd);
-    // «убыточный» ребаланс — когда потеряли больше, чем стоят издержки свопа
-    const lost = newCapital < pos.capital * 0.9985;
+    // новый размер ограничен и риск-лимитом под новый ATR, и ликвидностью коридора (plan.capital)
+    const newCapital = Math.max(0, Math.min(value - frictionUsd, plan.capital));
+    const lossThreshold = pos.capital * (1 - Math.max(0.002, (2 * this.settings.frictionPct) / 100));
+    const lost = newCapital < lossThreshold;
 
     const oldCapital = pos.capital;
+    const oldRange = pos.rangePct;
+    const oldAtr = pos.entryAtrPct;
+    const scale = newCapital / Math.max(1e-9, plan.capital);
+
+    const pair = splitPair(freshPool);
+    if (pair.token.price > 0) pos.tokenPriceUsd = pair.token.price;
+    if (pair.solPrice > 0) pos.solPriceUsd = pair.solPrice;
+    if (pair.token.decimals) pos.tokenDecimals = pair.token.decimals;
+
     pos.capital = newCapital;
     pos.entryPrice = price;
-    pos.bins = pos.bins.map((b) => ({ ...b, usd: (b.usd / Math.max(1e-9, oldCapital)) * newCapital }));
-    {
-      let tu = 0;
-      let ta = 0;
-      for (const b of pos.bins) if (b.priceRel > 1) { tu += b.usd; ta += b.usd / b.priceRel; }
-      pos.avgEntryRel = ta > 0 ? tu / ta : 1;
-    }
+    pos.avgEntryRel = plan.avgEntryPriceRel;
+    pos.rangePct = plan.rangePct;
+    pos.entryRangePct = plan.rangePct;
+    pos.entryAtrPct = plan.atrPct;
+    pos.atrPct = plan.atrPct;
+    pos.turnover24 = plan.turnover24;
+    pos.predictedDailyPct = plan.expectedDailyPct;
+    pos.inRangeShare = plan.inRangeShare;
+    pos.pool = freshPool;
+    pos.bins = plan.bins.map((b) => ({
+      k: b.k,
+      priceRel: b.priceRel,
+      usd: b.usd * scale,
+      poolUsd: b.poolUsd ?? 0,
+      feePerDay: b.feePerDay * scale,
+    }));
     pos.filled = new Set<number>();
     pos.breakChecks = 0;
     pos.rebalances += 1;
     pos.frictionPaid += frictionUsd;
-    pos.lastRebalanceAt = Date.now();
     pos.consecutiveLosses = lost ? pos.consecutiveLosses + 1 : 0;
+    if (cause === "RANGE_ADJUST") {
+      pos.rangeAdjusts += 1;
+      pos.lastRangeAdjustAt = now;
+    } else {
+      pos.lastRebalanceAt = now;
+    }
+    pos.rangeNeedsAdjust = false;
+    pos.outSince = 0;
 
     db.prepare(
-      `UPDATE positions SET capital=?, entry_price=?, p_avg_price=?, p_exit=?, bins=?, rebalances=?, consecutive_losses=?, friction_usd=?, updated_at=? WHERE id=?`,
+      `UPDATE positions SET capital=?, entry_price=?, p_avg_price=?, p_exit=?, bins=?, rebalances=?, consecutive_losses=?, friction_usd=?, range_pct=?, atr_pct=?, entry_atr_pct=?, entry_range_pct=?, range_adjusts=?, last_range_adjust_at=?, updated_at=? WHERE id=?`,
     ).run(
       pos.capital,
       pos.entryPrice,
@@ -1099,26 +1307,58 @@ export class Engine {
       pos.rebalances,
       pos.consecutiveLosses,
       pos.frictionPaid,
+      pos.rangePct,
+      pos.atrPct,
+      pos.entryAtrPct,
+      pos.entryRangePct,
+      pos.rangeAdjusts,
+      pos.lastRangeAdjustAt,
       Date.now(),
       pos.id,
     );
-    event(pos.id, "REBALANCE", { from: oldCapital, to: pos.capital, frictionUsd, price, rel });
+
+    const type = cause === "RANGE_ADJUST" ? "RANGE_ADJUST" : "REBALANCE";
+    const rangeNote =
+      Math.abs(plan.rangePct - oldRange) > 1e-6
+        ? `диапазон ±${(oldRange * 100).toFixed(2)}% → ±${(plan.rangePct * 100).toFixed(2)}%`
+        : `диапазон ±${(plan.rangePct * 100).toFixed(2)}% (без изменений)`;
     journal(
-      "REBALANCE",
-      `pos#${pos.id} ребаланс #${pos.rebalances}: цена ${((rel - 1) * 100).toFixed(2)}% → новая сетка ±${(pos.rangePct * 100).toFixed(1)}% от ${price.toFixed(8)}, капитал $${oldCapital.toFixed(0)}→$${pos.capital.toFixed(0)} (friction $${frictionUsd.toFixed(2)}), серия убытков ${pos.consecutiveLosses}`,
+      type,
+      `pos#${pos.id} ${pos.tokenSymbol} ${cause === "RANGE_ADJUST" ? "правка диапазона" : "ребаланс"} #${pos.rebalances}: цена ${((rel - 1) * 100).toFixed(2)}% · ${rangeNote} · ATR ${oldAtr.toFixed(2)}% → ${plan.atrPct.toFixed(2)}% · капитал $${oldCapital.toFixed(0)}→$${pos.capital.toFixed(0)} (friction $${frictionUsd.toFixed(2)}) · серия убытков ${pos.consecutiveLosses}`,
       {
         position: pos.id,
+        cause,
         price,
         rel,
         fromCapital: oldCapital,
         toCapital: pos.capital,
         frictionUsd,
+        rangeFromPct: oldRange * 100,
+        rangeToPct: plan.rangePct * 100,
+        atrFromPct: oldAtr,
+        atrToPct: plan.atrPct,
+        atrDriftPct: health.atrDriftPct,
         rebalances: pos.rebalances,
+        rangeAdjusts: pos.rangeAdjusts,
         consecutiveLosses: pos.consecutiveLosses,
-        outMinutes: pos.outSince ? (Date.now() - pos.outSince) / 60_000 : null,
+        binsCount: pos.bins.length,
+        expectedDailyPct: plan.expectedDailyPct,
+        outMinutes: pos.outSince ? (now - pos.outSince) / 60_000 : null,
         lost,
       },
     );
+    event(pos.id, type, {
+      price,
+      rel,
+      fromCapital: oldCapital,
+      toCapital: pos.capital,
+      frictionUsd,
+      rangeFromPct: oldRange * 100,
+      rangeToPct: plan.rangePct * 100,
+      atrFromPct: oldAtr,
+      atrToPct: plan.atrPct,
+      cause,
+    });
 
     if (pos.consecutiveLosses >= this.settings.consecutiveLossStop) {
       journal("STOP", `pos#${pos.id} ${pos.consecutiveLosses} убыточных ребаланса подряд → полный выход и смена пула`, {
@@ -1183,6 +1423,172 @@ export class Engine {
 
   private lastQuickTick = 0;
 
+  /**
+   * Периодический пересмотр пула внутри позиции (раз в healthCheckMinutes).
+   *
+   * 1. Считаем те же жёсткие фильтры, что и на входе (ATR, TVL, оборот, объём, держатели, rug).
+   *    Провал подтверждается filterBreachChecks раз подряд (защита от одного плохого ответа API);
+   *    катастрофические значения (TVL/объём вдвое ниже лимита, ATR выше лимита в 1.5 раза,
+   *    падение больше 60%) закрывают позицию сразу.
+   * 2. Если ATR ушёл так, что диапазон перестал соответствовать волатильности,
+   *    перестраиваем сетку (RANGE_ADJUST) — но только когда цена внутри диапазона
+   *    и прошёл кулдаун, иначе это двойная работа на пробое.
+   * 3. Всё, что изменилось, пишется в журнал: HEALTH / RANGE_ADJUST / EXIT_FILTERS.
+   *
+   * @returns true, если позиция закрыта или перестроена (дальше в тике делать нечего)
+   */
+  private async monitorConditions(pos: RtPos, price: number, now: number): Promise<boolean> {
+    const everyMs = Math.max(1, this.settings.healthCheckMinutes) * 60_000;
+    if (now - pos.lastHealthAt < everyMs) return false;
+    pos.lastHealthAt = now;
+
+    const pool = pos.freshPool ?? (await fetchPool(pos.pool.address).catch(() => null));
+    if (!pool) return false;
+
+    const candles = this.alignCandles(await this.getCandles(pos.pool.address, "30m"), price);
+    const health = evaluatePoolHealth({
+      pool,
+      candles30m: candles,
+      settings: this.settings,
+      atrAtEntry: pos.entryAtrPct,
+      rangePct: pos.rangePct,
+      atrTolerancePct: this.settings.atrExitTolerancePct,
+      now,
+    });
+
+    // живые метрики позиции
+    pos.atrPct = health.atrPct;
+    pos.turnover24 = health.turnover24;
+    pos.inRangeShare = health.inRangeShare || pos.inRangeShare;
+
+    // журнал: пишем при смене состояния, но не чаще раза в 30 минут при «том же»
+    const changed = health.signature !== pos.lastHealthKey;
+    const stale = now - ((pos as any).lastHealthLogAt ?? 0) > 30 * 60_000;
+    if (changed || stale) {
+      (pos as any).lastHealthLogAt = now;
+      pos.lastHealthKey = health.signature;
+      const failNote = health.failed.length
+        ? ` · провал: ${health.failed.map((c) => `${c.label} ${Number(c.value.toFixed(2))}${c.unit} при лимите ${Number(c.limit.toFixed(2))}${c.unit}`).join(", ")}`
+        : health.warn.length
+          ? ` · внимание: ${health.warn.map((c) => c.key).join(", ")}`
+          : "";
+      journal(
+        "HEALTH",
+        `pos#${pos.id} ${pos.tokenSymbol}: ${health.verdict.toUpperCase()} · ATR ${health.atrPct.toFixed(2)}% (вход ${health.atrAtEntry.toFixed(2)}%, ${health.atrDriftPct >= 0 ? "+" : ""}${health.atrDriftPct.toFixed(0)}%) · диапазон ±${(pos.rangePct * 100).toFixed(2)}% (цель ±${(health.rangePctTarget * 100).toFixed(2)}%) · оборот ${health.turnover24.toFixed(2)}x · TVL $${Math.round(health.tvl)} · в коридоре ${(health.inRangeShare * 100).toFixed(0)}%${failNote}`,
+        {
+          position: pos.id,
+          verdict: health.verdict,
+          atrPct: health.atrPct,
+          atrAtEntry: health.atrAtEntry,
+          atrDriftPct: health.atrDriftPct,
+          rangePct: pos.rangePct * 100,
+          rangePctTarget: health.rangePctTarget * 100,
+          rangeDriftPct: health.rangeDriftPct,
+          turnover24: health.turnover24,
+          tvl: health.tvl,
+          inRangeShare: health.inRangeShare,
+          change24h: health.change24h,
+          failed: health.failed.map((c) => ({ key: c.key, value: c.value, limit: c.limit })),
+          warn: health.warn.map((c) => c.key),
+          breachCount: pos.breachCount,
+        },
+      );
+    }
+
+    // ── 1. жёсткие фильтры
+    if (health.verdict === "hard") {
+      pos.breachCount += 1;
+      const confirmations = Math.max(1, Math.round(this.settings.filterBreachChecks));
+      const catastrophic = health.failed.some((c) => {
+        if (c.key === "data") return true;
+        if (c.key === "rug") return c.value < -60;
+        if (c.key === "atr") return c.value > c.limit * 1.5;
+        return c.value < c.limit * 0.5;
+      });
+      if (pos.breachCount >= confirmations || catastrophic) {
+        const why = health.failed
+          .map((c) => `${c.label} ${Number(c.value.toFixed(2))}${c.unit} (лимит ${Number(c.limit.toFixed(2))}${c.unit})`)
+          .join("; ");
+        journal(
+          "EXIT_FILTERS",
+          `pos#${pos.id} ${pos.tokenSymbol}: фильтры входа перестали проходить — ${why} (проверок подряд: ${pos.breachCount}${catastrophic ? ", катастрофическое значение" : ""}) → выход`,
+          {
+            position: pos.id,
+            price,
+            rel: price / pos.entryPrice,
+            atrPct: health.atrPct,
+            atrAtEntry: health.atrAtEntry,
+            turnover24: health.turnover24,
+            tvl: health.tvl,
+            breachCount: pos.breachCount,
+            confirmations,
+            catastrophic,
+            failed: health.failed.map((c) => ({ key: c.key, value: c.value, limit: c.limit, unit: c.unit })),
+          },
+        );
+        this.blockedPools.set(pos.pool.address, now + 60 * 60_000);
+        await this.closePositionById(pos.id, "EXIT_FILTERS", price);
+        return true;
+      }
+      journal("WARN", `pos#${pos.id} фильтры не проходят (${pos.breachCount}/${confirmations}) — ждём подтверждения`, {
+        position: pos.id,
+        breachCount: pos.breachCount,
+        failed: health.failed.map((c) => c.key),
+      });
+      return false;
+    }
+    pos.breachCount = 0;
+
+    // ── 2. пул «остыл» (оборот/комиссии) — отдельная мягкая проверка, как раньше
+    const feeDrop = pos.liveDailyPct > 0 && pos.liveDailyPct < Math.max(0.4, pos.predictedDailyPct * 0.35);
+    const tooQuiet = (pos.turnover24 > 0 && pos.turnover24 < this.settings.earlyExitTurnover) || feeDrop;
+    pos.lowConditionChecks = tooQuiet ? pos.lowConditionChecks + 1 : 0;
+    if (pos.lowConditionChecks >= 2) {
+      journal(
+        "STOP",
+        `pos#${pos.id} условия ухудшились (ATR ${health.atrPct.toFixed(2)}%, оборот ${pos.turnover24.toFixed(2)}x, факт ${pos.liveDailyPct.toFixed(2)}%/сут) → выход`,
+        { position: pos.id, atrPct: health.atrPct, turnover24: pos.turnover24, liveDailyPct: pos.liveDailyPct },
+      );
+      await this.closePositionById(pos.id, "EXIT_FLOW", price);
+      return true;
+    }
+
+    // ── 3. диапазон не соответствует текущему ATR → перестраиваем сетку
+    const rangeDrift = Math.abs(health.rangeDriftPct);
+    const bigEnough = rangeDrift >= Math.max(5, this.settings.rangeAdjustMinPct);
+    const cooldownOk = now - pos.lastRangeAdjustAt >= Math.max(5, this.settings.rangeAdjustCooldownMin) * 60_000;
+    const inside = Math.abs(price / pos.entryPrice - 1) < pos.rangePct * 0.9;
+    if (!bigEnough) return false;
+
+    if (!cooldownOk) {
+      if (changed) {
+        journal(
+          "RANGE_ADJUST",
+          `pos#${pos.id} диапазон ±${(pos.rangePct * 100).toFixed(2)}% не соответствует ATR (цель ±${(health.rangePctTarget * 100).toFixed(2)}%) — ждём кулдаун ${this.settings.rangeAdjustCooldownMin} мин`,
+          {
+            position: pos.id,
+            phase: "defer",
+            atrPct: health.atrPct,
+            rangePct: pos.rangePct * 100,
+            rangePctTarget: health.rangePctTarget * 100,
+            rangeDriftPct: health.rangeDriftPct,
+            cooldownMin: this.settings.rangeAdjustCooldownMin,
+          },
+        );
+      }
+      return false;
+    }
+    if (!inside) {
+      // цена у края/за диапазоном — этим занимается логика пробоя (10 минут и ребаланс)
+      return false;
+    }
+    if (pos.rebalances >= this.settings.maxRebalancesPerDay) return false;
+
+    pos.rangeNeedsAdjust = true;
+    await this.rebalance(pos, price, "RANGE_ADJUST");
+    return true;
+  }
+
   private async tickPosition(pos: RtPos) {
     const now = Date.now();
     const dtSec = Math.max(0, (now - pos.lastTick) / 1000);
@@ -1195,6 +1601,7 @@ export class Engine {
     if (needApi || !pos.lastApiPrice) {
       try {
         const fresh = await fetchPool(pos.pool.address);
+        if (fresh) pos.freshPool = fresh;
         if (fresh && fresh.currentPrice > 0) {
           apiPrice = fresh.currentPrice;
           pos.lastApiPrice = apiPrice;
@@ -1414,34 +1821,8 @@ export class Engine {
       return;
     }
 
-    // ── проверка условий рынка раз в 5 минут
-    if (now - (pos as any).lastConditionAt > 5 * 60_000) {
-      (pos as any).lastConditionAt = now;
-      try {
-        const candles30 = this.alignCandles(await this.getCandles(pos.pool.address, "30m"), price);
-        const atr = computeAtr(candles30, 14);
-        pos.atrPct = atr;
-        pos.inRangeShare = volumeShareInRange(candles30, price, pos.rangePct) || pos.inRangeShare;
-        const tooVolatile = atr > this.settings.earlyExitAtrPct;
-        const feeDrop = pos.liveDailyPct > 0 && pos.liveDailyPct < Math.max(0.4, pos.predictedDailyPct * 0.35);
-        const tooQuiet = (pos.turnover24 > 0 && pos.turnover24 < this.settings.earlyExitTurnover) || feeDrop;
-        if (tooVolatile || tooQuiet) {
-          pos.lowConditionChecks += 1;
-        } else {
-          pos.lowConditionChecks = 0;
-        }
-        if (pos.lowConditionChecks >= 2) {
-          journal(
-            "STOP",
-            `pos#${pos.id} условия ухудшились (ATR ${atr.toFixed(2)}%, оборот ${pos.turnover24.toFixed(2)}x) → выход`,
-          );
-          await this.closePositionById(pos.id, tooVolatile ? "EXIT_VOLATILITY" : "EXIT_FLOW", price);
-          return;
-        }
-      } catch {
-        /* пропускаем проверку */
-      }
-    }
+    // ── пересмотр пула: жёсткие фильтры, «остывание» и соответствие диапазона ATR
+    if (await this.monitorConditions(pos, price, now)) return;
 
     // ── срез состояния раз в 5 минут: по нему видно, как менялся капитал и просадка
     if (now - this.lastSnapAt > 5 * 60_000) {
@@ -1469,6 +1850,9 @@ export class Engine {
           pnl: this.positionDto(p)?.pnl ?? 0,
           fees: p.feesAccrued + p.feesClaimed,
           rebalances: p.rebalances,
+          rangeAdjusts: p.rangeAdjusts,
+          entryAtrPct: p.entryAtrPct,
+          atrPct: p.atrPct,
           rotatePending: p.rotatePending,
         })),
       });
@@ -1920,12 +2304,16 @@ export class Engine {
       atrPct: p.atrPct,
       turnover24: p.turnover24,
       rebalances: p.rebalances,
+      rangeAdjusts: p.rangeAdjusts,
+      entryAtrPct: p.entryAtrPct,
       maxRebalances: this.settings.maxRebalancesPerDay,
       consecutiveLosses: p.consecutiveLosses,
       consecutiveLossStop: this.settings.consecutiveLossStop,
       binsCount: p.bins.length,
       activeBins: p.filled.size,
       atrExitPct: this.settings.earlyExitAtrPct,
+      atrExitTolerancePct: this.settings.atrExitTolerancePct,
+      rangePctTarget: targetHalfRange(p.atrPct, this.settings),
       turnoverExit: this.settings.earlyExitTurnover,
       predictedDailyPct: p.predictedDailyPct,
       liveDailyPct: p.liveDailyPct,

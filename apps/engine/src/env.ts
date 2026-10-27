@@ -87,6 +87,17 @@ export const env = {
     // сколько ждём возврата цены в диапазон, прежде чем ребалансировать
     rangeBreakMinutes: num(process.env.RANGE_BREAK_MINUTES, 10),
     claimThresholdPct: num(process.env.CLAIM_THRESHOLD_PCT, 0.5),
+    // ── пересмотр пула и динамический диапазон
+    /** во сколько раз ATR может превысить лимит входа, прежде чем выходим, % */
+    atrExitTolerancePct: num(process.env.ATR_EXIT_TOLERANCE_PCT, 20),
+    /** как часто пересматриваем пул внутри позиции */
+    healthCheckMinutes: num(process.env.HEALTH_CHECK_MINUTES, 5),
+    /** сколько подтверждений подряд нужно, чтобы выйти по фильтрам */
+    filterBreachChecks: num(process.env.FILTER_BREACH_CHECKS, 2),
+    /** при каком расхождении целевого и текущего диапазона правим сетку, % */
+    rangeAdjustMinPct: num(process.env.RANGE_ADJUST_MIN_PCT, 20),
+    /** не чаще одного сдвига сетки за это время */
+    rangeAdjustCooldownMin: num(process.env.RANGE_ADJUST_COOLDOWN_MIN, 30),
     scanIntervalSeconds: num(process.env.SCAN_INTERVAL_SECONDS, 45),
     exitCostPct: num(process.env.FRICTION_PCT, 0.15),
   },

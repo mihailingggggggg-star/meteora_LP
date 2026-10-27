@@ -393,6 +393,9 @@ function GridLadder({
   consecutiveLosses,
   consecutiveLossStop,
   avgRel,
+  atrPct = 0,
+  rangePctTarget = 0,
+  rangeAdjusts = 0,
 }: {
   entry: number;
   current: number;
@@ -403,6 +406,9 @@ function GridLadder({
   maxRebalances: number;
   consecutiveLosses: number;
   consecutiveLossStop: number;
+  atrPct?: number;
+  rangePctTarget?: number;
+  rangeAdjusts?: number;
 }) {
   const H = 268;
   const pad = 22;
@@ -541,6 +547,16 @@ function GridLadder({
               <div className="text-[8.5px] uppercase tracking-wider text-dim">бинов в сетке</div>
               <div className="num text-[11px]">{bins.length} · капитал делится 50/50</div>
             </div>
+            <div className="surface-sm col-span-2 p-2">
+              <div className="text-[8.5px] uppercase tracking-wider text-dim">ATR → диапазон</div>
+              <div className="num text-[11px] text-ink">
+                {atrPct.toFixed(2)}% <span className="text-dim">→</span> ±
+                {((rangePctTarget || rangePct) * 100).toFixed(2)}%
+                <span className="ml-1 text-[9px] text-dim">
+                  · сейчас ±{(rangePct * 100).toFixed(2)}% · правок {rangeAdjusts}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -551,6 +567,8 @@ function GridLadder({
 const EVENT_STYLE: Record<string, { c: string; bg: string; b: string; label: string }> = {
   ENTER: { c: "text-mint", bg: "bg-mint/10", b: "border-mint/20", label: "Вход" },
   REBALANCE: { c: "text-accent2", bg: "bg-accent/10", b: "border-accent/20", label: "Ребаланс" },
+  RANGE_ADJUST: { c: "text-accent2", bg: "bg-accent/10", b: "border-accent/20", label: "Правка диапазона" },
+  EXIT_FILTERS: { c: "text-danger", bg: "bg-danger/10", b: "border-danger/20", label: "Выход: фильтры" },
   FILL: { c: "text-muted", bg: "bg-white/[0.03]", b: "border-white/[0.06]", label: "Бины заполнены" },
   CLAIM: { c: "text-accent2", bg: "bg-accent/10", b: "border-accent/20", label: "Комиссии собраны" },
   CONSECUTIVE_LOSS: { c: "text-danger", bg: "bg-danger/10", b: "border-danger/20", label: "Серия убытков — стоп" },
@@ -850,6 +868,7 @@ export default function PositionDetail() {
               <div className="num mt-0.5 text-[13px] text-ink">
                 {live?.rebalances ?? detail.rebalances ?? 0}
                 <span className="text-dim">/{live?.maxRebalances ?? 8}</span>
+                <span className="ml-1 text-[9px] text-dim">· диапазон {live?.rangeAdjusts ?? 0}</span>
               </div>
             </div>
           </div>
@@ -905,7 +924,7 @@ export default function PositionDetail() {
                 <span className="text-[13px] text-dim">/{live?.maxRebalances ?? 8}</span>
               </span>
             }
-            sub={`серия убытков ${live?.consecutiveLosses ?? detail.consecutive_losses ?? 0}/${live?.consecutiveLossStop ?? 3}`}
+            sub={`серия убытков ${live?.consecutiveLosses ?? detail.consecutive_losses ?? 0}/${live?.consecutiveLossStop ?? 3} · правок диапазона ${live?.rangeAdjusts ?? detail.range_adjusts ?? 0}`}
             tone={(live?.consecutiveLosses ?? 0) >= 2 ? "danger" : "ink"}
             icon={<RefreshCw className="h-3.5 w-3.5" />}
           />
@@ -1030,6 +1049,9 @@ export default function PositionDetail() {
             bins={(live?.bins ?? detail.bins ?? []).map((b: any) => ({ priceRel: b.priceRel, usd: b.usd }))}
             rebalances={live?.rebalances ?? detail.rebalances ?? 0}
             maxRebalances={live?.maxRebalances ?? 8}
+            atrPct={live?.atrPct ?? 0}
+            rangePctTarget={live?.rangePctTarget ?? 0}
+            rangeAdjusts={live?.rangeAdjusts ?? detail.range_adjusts ?? 0}
             consecutiveLosses={live?.consecutiveLosses ?? detail.consecutive_losses ?? 0}
             consecutiveLossStop={live?.consecutiveLossStop ?? 3}
             avgRel={live?.avgEntryRel ?? 1}
