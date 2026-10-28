@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { FileText, Save, ShieldAlert, Wallet, Server, Target, Gauge, Radar, Split, Repeat } from "lucide-react";
-import { Button, Card, Chip, FadeIn, Muted } from "@/components/ui/kit";
+import { Button, Card, Chip, FadeIn, Muted, Segmented } from "@/components/ui/kit";
 import { ConnectWallet } from "@/components/wallet/connect-wallet";
-import { engineGet, enginePost, useEngineState } from "@/lib/api";
+import { engineDelete, engineGet, enginePost, useEngineState } from "@/lib/api";
 import { pctPlain, usd } from "@/lib/format";
 import { toast } from "sonner";
 
@@ -66,6 +66,13 @@ export default function SettingsPage() {
   const { state } = useEngineState();
   const [form, setForm] = useState<any>(null);
   const [live, setLive] = useState<any>(null);
+  const [walletOpen, setWalletOpen] = useState(false);
+  const [secretInput, setSecretInput] = useState("");
+  const [pubkeyInput, setPubkeyInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmLive, setConfirmLive] = useState(false);
+  const [dryRunChoice, setDryRunChoice] = useState(true);
+  const [capitalInput, setCapitalInput] = useState<number>(0);
   const [saving, setSaving] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [journalDay, setJournalDay] = useState<string>("");
@@ -137,6 +144,71 @@ export default function SettingsPage() {
       stop = true;
     };
   }, []);
+
+  const refreshLive = async () => {
+    try {
+      setLive(await engineGet<any>("/live/status"));
+    } catch {
+      /* движок может перезапускаться */
+    }
+  };
+
+  const saveWallet = async () => {
+    if (!secretInput.trim()) {
+      toast.error("Вставьте приватный ключ кошелька");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await enginePost<any>("/live/wallet", { secret: secretInput.trim(), pubkey: pubkeyInput.trim() });
+      if (r?.ok) {
+        toast.success(`Кошелёк подключён: ${r.saved.pubkey.slice(0, 4)}…${r.saved.pubkey.slice(-4)}`);
+        setWalletOpen(false);
+        setSecretInput("");
+        setPubkeyInput("");
+        if (r.status) setLive(r.status);
+      } else {
+        toast.error(r?.error ?? "Не удалось сохранить ключ");
+      }
+    } catch {
+      toast.error("Не удалось сохранить ключ");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnectWallet = async () => {
+    setBusy(true);
+    try {
+      const r = await engineDelete<any>("/live/wallet");
+      toast.success("Кошелёк отключён");
+      if (r?.status) setLive(r.status);
+      else void refreshLive();
+    } catch {
+      toast.error("Не удалось отключить кошелёк");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const switchMode = async (mode: "demo" | "live", dryRun: boolean, capitalUsd?: number) => {
+    setBusy(true);
+    try {
+      await enginePost<any>("/live/mode", { mode, dryRun, capitalUsd }).catch(() => null); // движок уходит в рестарт
+      toast.success(
+        mode === "live"
+          ? dryRun
+            ? "Включена репетиция live — движок перезапускается"
+            : "Включён LIVE — движок перезапускается"
+          : "Демо-режим — движок перезапускается",
+        { description: "Обновляю статус через 6 секунд" },
+      );
+      setTimeout(() => void refreshLive(), 6500);
+    } finally {
+      setBusy(false);
+      setConfirmLive(false);
+    }
+  };
 
   const reconcile = async () => {
     try {
@@ -603,9 +675,11 @@ export default function SettingsPage() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted">Ключ в .env</span>
+                  <span className="text-muted">Ключ</span>
                   <span className={live?.secretPresent ? "text-mint" : "text-danger"}>
-                    {live?.secretPresent ? (live?.secretEncrypted ? "есть · зашифрован" : "есть · base58") : "нет"}
+                    {live?.secretPresent
+                      ? `${live?.walletSource === "db" ? "подключён в интерфейсе" : "из .env"} · ${live?.secretEncrypted ? "AES-256" : "base58"}`
+                      : "не задан"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -630,6 +704,56 @@ export default function SettingsPage() {
                   <span className="text-muted">Сверка с цепочкой</span>
                   <span className="num">{live?.positionsWithChainAddress ?? 0} поз. с адресом</span>
                 </div>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10.5px] uppercase tracking-wide text-dim">Режим</div>
+                  <Segmented
+                    value={(state?.mode === "live" ? "live" : "demo") as "demo" | "live"}
+                    options={[
+                      { value: "demo", label: "Демо" },
+                      { value: "live", label: "Live" },
+                    ]}
+                    onChange={(v) => (v === "live" ? setConfirmLive(true) : switchMode("demo", false))}
+                  />
+                </div>
+
+                <div className="mt-2.5 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[10.5px] uppercase tracking-wide text-dim">Кошелёк</div>
+                    <div className="num truncate text-[11.5px]">
+                      {live?.wallet ? `${live.wallet.slice(0, 6)}…${live.wallet.slice(-6)}` : "не подключён"}
+                    </div>
+                  </div>
+                  {live?.secretPresent ? (
+                    <div className="flex shrink-0 gap-1.5">
+                      <Button variant="ghost" size="sm" onClick={() => setWalletOpen(true)} disabled={busy}>
+                        Заменить
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={disconnectWallet} disabled={busy}>
+                        Отключить
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button variant="mint" size="sm" onClick={() => setWalletOpen(true)} disabled={busy}>
+                      Подключить кошелёк
+                    </Button>
+                  )}
+                </div>
+
+                {state?.mode === "live" ? (
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span className="text-[10.5px] text-dim">Репетиция (без отправки)</span>
+                    <button
+                      onClick={() => switchMode("live", !live?.dryRun)}
+                      disabled={busy}
+                      className={`rounded-full px-2.5 py-1 text-[10.5px] font-medium ${live?.dryRun ? "bg-amber-500/15 text-amber-200" : "bg-white/[0.06] text-muted"}`}
+                    >
+                      {live?.dryRun ? "включена" : "выключена"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               {live?.checks && !live.checks.ok ? (
@@ -792,6 +916,104 @@ export default function SettingsPage() {
           </FadeIn>
         </div>
       </div>
+
+      {walletOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setWalletOpen(false)}>
+          <div className="w-full max-w-[520px] rounded-2xl border border-white/10 bg-[#171310] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="text-[15px] font-semibold">Подключить торговый кошелёк</div>
+            <div className="mt-1 text-[11.5px] leading-relaxed text-muted">
+              Ключ шифруется (AES-256-GCM) и хранится в базе сервера — он нужен, чтобы бот подписывал сделки 24/7.
+              Используйте <b>отдельный</b> кошелёк и держите на нём только торговую сумму.
+              Отключить можно в любой момент — ключ удаляется из базы.
+            </div>
+            <div className="mt-3">
+              <div className="text-[10.5px] uppercase tracking-wide text-dim">Приватный ключ (base58 или JSON-массив)</div>
+              <textarea
+                value={secretInput}
+                onChange={(e) => setSecretInput(e.target.value)}
+                rows={3}
+                spellCheck={false}
+                placeholder="4h3k…  или  [12,34,56,…]"
+                className="mt-1 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 font-mono text-[11.5px] text-ink focus:border-accent/50 focus:outline-none"
+              />
+            </div>
+            <div className="mt-2">
+              <div className="text-[10.5px] uppercase tracking-wide text-dim">Адрес (необязательно — сверим с ключом)</div>
+              <input
+                value={pubkeyInput}
+                onChange={(e) => setPubkeyInput(e.target.value)}
+                spellCheck={false}
+                placeholder="публичный адрес кошелька"
+                className="mt-1 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 font-mono text-[11.5px] text-ink focus:border-accent/50 focus:outline-none"
+              />
+            </div>
+            <div className="mt-4 flex gap-2">
+              <Button variant="ghost" size="sm" className="flex-1" onClick={() => setWalletOpen(false)} disabled={busy}>
+                Отмена
+              </Button>
+              <Button variant="mint" size="sm" className="flex-1" onClick={saveWallet} disabled={busy || !secretInput.trim()}>
+                {busy ? "Сохраняю…" : "Подключить"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmLive ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setConfirmLive(false)}>
+          <div className="w-full max-w-[480px] rounded-2xl border border-white/10 bg-[#171310] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="text-[15px] font-semibold">Перейти в LIVE?</div>
+            <div className="mt-2 space-y-1 text-[11.5px] text-muted">
+              <div>Кошелёк: <span className="num text-ink">{live?.wallet ? `${live.wallet.slice(0, 6)}…${live.wallet.slice(-6)}` : "не подключён"}</span></div>
+              <div>Лимиты: <span className="num text-ink">{live?.limits?.maxPositions ?? 2} поз. · {usd(live?.limits?.maxPositionUsd ?? 0, 0)}/поз.</span></div>
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span>Торговый капитал</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={10}
+                    value={capitalInput || (state?.deposit ?? 500)}
+                    onChange={(e) => setCapitalInput(Number(e.target.value))}
+                    className="num w-24 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-right text-[11.5px] text-ink focus:border-accent/50 focus:outline-none"
+                  />
+                  <span className="text-dim">$</span>
+                </span>
+              </div>
+              <div className="text-[10.5px] text-dim">Размер позиции считается от этой суммы (риск-лимит 3 % на сделку).</div>
+              <div>Алерты: <span className={live?.alertsEnabled ? "text-mint" : "text-danger"}>{live?.alertsEnabled ? "включены" : "не настроены"}</span></div>
+            </div>
+            <label className="mt-3 flex items-start gap-2 rounded-lg border border-white/[0.06] p-2 text-[11.5px]">
+              <input
+                type="checkbox"
+                checked={dryRunChoice}
+                onChange={(e) => setDryRunChoice(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-amber-400"
+              />
+              <span>
+                <b>Репетиция</b> — транзакции собираются и симулируются, но не отправляются. Рекомендую для первых часов.
+              </span>
+            </label>
+            {!live?.secretPresent ? (
+              <div className="mt-2 text-[11px] text-danger">Сначала подключите кошелёк — без ключа live не включится.</div>
+            ) : null}
+            <div className="mt-4 flex gap-2">
+              <Button variant="ghost" size="sm" className="flex-1" onClick={() => setConfirmLive(false)}>
+                Отмена
+              </Button>
+              <Button
+                variant="mint"
+                size="sm"
+                className="flex-1"
+                disabled={busy || !live?.secretPresent}
+                onClick={() => switchMode("live", dryRunChoice, capitalInput || state?.deposit || 500)}
+              >
+                {dryRunChoice ? "Включить репетицию" : "Включить LIVE"}
+              </Button>
+            </div>
+            <div className="mt-2 text-[10.5px] text-dim">Движок перезапустится сам (2–3 секунды). Демо-история сохранится отдельно.</div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -21,6 +21,12 @@ export async function enginePost<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
+export async function engineDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${ENGINE}${path}`, { method: "DELETE", cache: "no-store" });
+  if (!res.ok) throw new Error(`${res.status} ${path}`);
+  return res.json();
+}
+
 /** Живое состояние движка: опрос каждые 3 секунды (надёжно за прокси). */
 export function useEngineState() {
   const [state, setState] = useState<any>(null);

@@ -12,7 +12,8 @@ import DLMM from "@meteora-ag/dlmm";
 import BN from "bn.js";
 import bs58 from "bs58";
 import { env } from "./env.js";
-import { db } from "./db.js";
+import { db, getSetting, setSetting } from "./db.js";
+import { updateEnvFile } from "./envfile.js";
 import { journal } from "./journal.js";
 import { alert, alertCritical, alertsEnabled } from "./alerts.js";
 import { getConnection } from "./chain.js";
@@ -71,17 +72,96 @@ export function encryptSecret(secret: string, encryptionKey?: string): string {
   return `enc:${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${data.toString("base64")}`;
 }
 
+/** Ключ, сохранённый из интерфейса: { secret: "enc:…", pubkey } в таблице settings. */
+export function storedWallet(): { secret: string; pubkey: string } | null {
+  try {
+    const v = getSetting<any>("live.wallet", null);
+    if (!v || typeof v.secret !== "string" || !v.secret) return null;
+    return { secret: v.secret, pubkey: String(v.pubkey ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+function secretSource(): { secret: string; pubkey: string; from: "db" | "env" | "none" } {
+  const dbw = storedWallet();
+  if (dbw) return { secret: dbw.secret, pubkey: dbw.pubkey || env.live.pubkey, from: "db" };
+  if (env.live.secret) return { secret: env.live.secret, pubkey: env.live.pubkey, from: "env" };
+  return { secret: "", pubkey: "", from: "none" };
+}
+
+/** Для статуса: откуда берётся ключ и задан ли ключ шифрования. */
+export function walletInfo() {
+  const src = secretSource();
+  return {
+    walletSource: src.from,
+    encryptionKeyPresent: Boolean(env.live.encryptionKey),
+    secretPresent: src.from !== "none",
+    secretEncrypted: src.secret.startsWith("enc:"),
+  };
+}
+
+function resetWalletCache() {
+  wallet = null;
+  walletTried = false;
+  walletError = null;
+}
+
+/** Загружается ключ шифрования: из .env, а если его нет — генерируем и сохраняем в .env. */
+function encryptionKey(createIfMissing: boolean): string {
+  if (env.live.encryptionKey) return env.live.encryptionKey;
+  if (!createIfMissing) return "";
+  const key = crypto.randomBytes(32).toString("base64");
+  updateEnvFile({ WALLET_ENCRYPTION_KEY: key });
+  env.live.encryptionKey = key;
+  journal("WARN", "сгенерирован WALLET_ENCRYPTION_KEY и сохранён в .env (ключ кошелька будет зашифрован)");
+  return key;
+}
+
+/**
+ * Сохранение ключа из интерфейса: расшифровываем/валидируем, шифруем AES-256-GCM
+ * и кладём в БД. В журнал попадает только адрес — сам ключ не логируется никогда.
+ */
+export function setWalletSecret(rawSecret: string, pubkeyHint?: string): { pubkey: string; encrypted: boolean } {
+  const raw = String(rawSecret ?? "").trim();
+  if (!raw) throw new Error("пустой ключ");
+  const bytes = decodeSecret(raw);
+  const kp = Keypair.fromSecretKey(bytes);
+  const pubkey = kp.publicKey.toBase58();
+  if (pubkeyHint && pubkeyHint.trim() && pubkeyHint.trim() !== pubkey) {
+    throw new Error(`ключ не соответствует указанному адресу (у ключа ${pubkey})`);
+  }
+  const key = encryptionKey(true);
+  const payload = `enc:${(() => {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", crypto.createHash("sha256").update(key).digest(), iv);
+    const data = Buffer.concat([cipher.update(raw, "utf8"), cipher.final()]);
+    return `${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${data.toString("base64")}`;
+  })()}`;
+  setSetting("live.wallet", { secret: payload, pubkey, at: Date.now() });
+  resetWalletCache();
+  journal("BOOT", `кошелёк подключён из интерфейса: ${pubkey} (ключ зашифрован AES-256-GCM)`, { wallet: pubkey });
+  return { pubkey, encrypted: true };
+}
+
+export function clearWallet(): void {
+  setSetting("live.wallet", null);
+  resetWalletCache();
+  journal("WARN", "кошелёк отключён из интерфейса (ключ удалён из базы)");
+}
+
 export function loadWallet(): Keypair | null {
   if (walletTried) return wallet;
   walletTried = true;
-  if (!env.live.secret) {
-    walletError = "TRADING_WALLET_SECRET_BASE58 не задан";
+  const src = secretSource();
+  if (!src.secret) {
+    walletError = "кошелёк не подключён: ни в интерфейсе, ни в .env нет ключа";
     return null;
   }
   try {
-    const kp = Keypair.fromSecretKey(decodeSecret(env.live.secret));
-    if (env.live.pubkey && kp.publicKey.toBase58() !== env.live.pubkey) {
-      walletError = `ключ не соответствует TRADING_WALLET_PUBKEY (${kp.publicKey.toBase58()})`;
+    const kp = Keypair.fromSecretKey(decodeSecret(src.secret));
+    if (src.pubkey && kp.publicKey.toBase58() !== src.pubkey) {
+      walletError = `ключ не соответствует указанному адресу (${kp.publicKey.toBase58()})`;
       return null;
     }
     wallet = kp;
@@ -598,8 +678,7 @@ export function status() {
     armed: armed(),
     wallet: walletAddress(),
     walletError,
-    secretPresent: Boolean(env.live.secret),
-    secretEncrypted: env.live.secret.startsWith("enc:"),
+    ...walletInfo(),
     limits: {
       maxPositions: env.live.maxPositions,
       maxPositionUsd: env.live.maxPositionUsd,

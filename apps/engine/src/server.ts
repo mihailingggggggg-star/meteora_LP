@@ -9,6 +9,7 @@ import { dayKey, journal, journalDays, readJournal, readJournalFull, readJournal
 import { event } from "./db.js";
 import { env } from "./env.js";
 import * as live from "./executor.js";
+import { updateEnvFile } from "./envfile.js";
 
 // CORS здесь не нужен: браузер общается с движком только через next-прокси
 // (тот же origin), а сам движок слушает 127.0.0.1. Заголовка `*` больше нет.
@@ -416,6 +417,49 @@ export function startServer() {
         return json(res, 200, { pools: out.slice(0, 10), watching: swapWatcher.list() });
       }
       if (p === "/api/live/status") return json(res, 200, live.status());
+
+      // ── кошелёк: подключение/отключение прямо из интерфейса
+      if (p === "/api/live/wallet" && req.method === "POST") {
+        const body = await readBody(req);
+        try {
+          const saved = live.setWalletSecret(String(body?.secret ?? ""), String(body?.pubkey ?? ""));
+          return json(res, 200, { ok: true, saved, status: live.status() });
+        } catch (err: any) {
+          return json(res, 400, { ok: false, error: String(err?.message ?? err) });
+        }
+      }
+      if (p === "/api/live/wallet" && req.method === "DELETE") {
+        live.clearWallet();
+        return json(res, 200, { ok: true, status: live.status() });
+      }
+
+      // ── переключение демо / live (и режим репетиции) из интерфейса
+      if (p === "/api/live/mode" && req.method === "POST") {
+        const body = await readBody(req);
+        const mode = body?.mode === "live" ? "live" : "demo";
+        const dryRun = body?.dryRun === true;
+        const capitalUsd = Number(body?.capitalUsd ?? 0);
+        const patch: Record<string, string> = {
+          BOT_MODE: mode,
+          LIVE_EXECUTION: mode === "live" ? "true" : "false",
+          LIVE_DRY_RUN: dryRun ? "true" : "false",
+        };
+        // торговый капитал = база для расчёта размера позиции
+        if (Number.isFinite(capitalUsd) && capitalUsd >= 10) patch.DEMO_DEPOSIT_USD = String(Math.round(capitalUsd));
+        const written = updateEnvFile(patch);
+        journal(
+          "WARN",
+          mode === "live"
+            ? `из интерфейса включён LIVE${dryRun ? " (репетиция, транзакции не отправляются)" : ""} → перезапуск движка`
+            : "из интерфейса включён ДЕМО-режим → перезапуск движка",
+          { mode, dryRun, changed: written.changed },
+        );
+        const payload = { ...live.status(), switched: true, mode, dryRun, restarting: true };
+        json(res, 200, payload);
+        // выходим — systemd (Restart=always) поднимет процесс уже с новым .env
+        setTimeout(() => process.exit(0), 600);
+        return;
+      }
       if (p === "/api/live/reconcile") {
         if (!live.armed()) return json(res, 200, { ok: true, skipped: "демо-режим", notes: [] });
         const out = await live.reconcile();
