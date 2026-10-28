@@ -778,6 +778,20 @@ export default function SettingsPage() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-muted">Расчётный размер позиции</span>
+                  {(() => {
+                    const dep = state?.deposit ?? 0;
+                    const loss = state?.settings?.maxLossPerTradePct ?? 3;
+                    const rng = state?.settings?.maxRangePct ?? 25;
+                    const size = (dep * loss) / 100 / (rng / 100 + 0.0025);
+                    return (
+                      <span className={`num ${size < 10 ? "text-danger" : "text-ink"}`}>
+                        ≈ {usd(size)} {size < 10 ? "· меньше минимума $10" : ""}
+                      </span>
+                    );
+                  })()}
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-muted">Слиппедж · резерв газа</span>
                   <span className="num">
                     {live?.limits?.slippagePct ?? 0}% · {live?.limits?.minSolReserve ?? 0} SOL
