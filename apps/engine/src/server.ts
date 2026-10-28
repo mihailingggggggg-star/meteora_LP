@@ -536,13 +536,12 @@ export function startServer() {
       if (p.startsWith("/api/bot/") && req.method === "POST") {
         const action = p.split("/").pop();
         if (action === "start") {
-          engine.running = true;
-          engine.halted = false;
-          engine.haltReason = null;
-          journal("BOOT", "бот запущен вручную");
+          // сохраняем сразу, иначе после рестарта restore() вернёт halted=true
+          engine.setRunning(true);
+          journal("BOOT", "бот запущен вручную", { halted: false });
         }
         if (action === "stop") {
-          engine.running = false;
+          engine.setRunning(false);
           journal("WARN", "бот остановлен вручную");
         }
         if (action === "scan") {

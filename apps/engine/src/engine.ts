@@ -2386,6 +2386,16 @@ export class Engine {
     }
   }
 
+  /** Ручной старт/пауза с сохранением состояния (иначе после рестарта вернётся halted=true). */
+  setRunning(run: boolean): void {
+    this.running = run;
+    if (run) {
+      this.halted = false;
+      this.haltReason = null;
+    }
+    this.persist();
+  }
+
   // ─────────────────────────── helpers / dto
 
   totalLiveValue(): number {
