@@ -18,8 +18,7 @@ import {
   TrendingUp,
   Waves,
   Percent,
-  ShieldAlert,
-} from "lucide-react";
+  ShieldAlert, Gauge } from "lucide-react";
 import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Button, Card, Chip, FadeIn, Muted, Segmented, Skeleton, Stat } from "@/components/ui/kit";
 import { TokenIcon } from "@/components/ui/token-icon";
@@ -904,6 +903,14 @@ export default function PositionDetail() {
                   : "—"
             }
             icon={<Percent className="h-3.5 w-3.5" />}
+          />
+        </FadeIn>
+        <FadeIn delay={0.05}>
+          <MetricTile
+            label="Доходность пула"
+            value={<span className="text-accent2">{pctPlain(live?.feeTvlPct ?? 0, 2)}<span className="text-[13px] text-dim">/сут</span></span>}
+            sub={<>fee/TVL пула · диапазон покрывает {Math.round(live?.rangeCoverAtr ?? 0)} ATR</>}
+            icon={<Gauge className="h-3.5 w-3.5" />}
           />
         </FadeIn>
         <FadeIn delay={0.06}>

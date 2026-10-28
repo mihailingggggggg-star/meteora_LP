@@ -2487,6 +2487,8 @@ export class Engine {
       rebalances: p.rebalances,
       rangeAdjusts: p.rangeAdjusts,
       entryAtrPct: p.entryAtrPct,
+      feeTvlPct: p.pool.feeTvl24h,
+      rangeCoverAtr: p.rangePct > 0 && p.atrPct > 0 ? p.rangePct * 100 / p.atrPct : 0,
       maxRebalances: this.settings.maxRebalancesPerDay,
       consecutiveLosses: p.consecutiveLosses,
       consecutiveLossStop: this.settings.consecutiveLossStop,
