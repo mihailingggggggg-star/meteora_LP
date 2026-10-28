@@ -47,6 +47,28 @@ function RuleRow({ icon, label, value }: { icon: React.ReactNode; label: string;
 
 export default function DashboardPage() {
   const { state, connected } = useEngineState();
+  const [walletBal, setWalletBal] = useState<any>(null);
+  useEffect(() => {
+    if (!state || state.mode !== "live") {
+      setWalletBal(null);
+      return;
+    }
+    let stop = false;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/engine/live/balance", { cache: "no-store" });
+        if (r.ok && !stop) setWalletBal(await r.json());
+      } catch {
+        /* нет RPC — покажем то, что есть */
+      }
+    };
+    void load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [state?.mode]);
   const [range, setRange] = useState<RangeKey>("7d");
   const [analytics, setAnalytics] = useState<any>(null);
 
@@ -136,6 +158,31 @@ export default function DashboardPage() {
                       </span>
                       {state?.mode === "demo" && <Chip tone="accent">демо</Chip>}
                     </div>
+                    {state?.mode === "live" ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-[11px]">
+                        <span className="text-dim">кошелёк:</span>
+                        <span className="num text-ink">
+                          {walletBal ? `${(walletBal.sol ?? 0).toFixed(4)} SOL ≈ ${usd(walletBal.solUsd ?? 0)}` : "—"}
+                        </span>
+                        {walletBal?.tokens?.length ? (
+                          <span className="num text-accent2">
+                            + токенов {usd((walletBal.totalUsd ?? 0) - (walletBal.solUsd ?? 0))}
+                          </span>
+                        ) : null}
+                        {walletBal?.totalUsd ? (
+                          <>
+                            <span className="h-1 w-1 rounded-full bg-dim/50" />
+                            <span className="num text-mint">всего ≈ {usd(walletBal.totalUsd)}</span>
+                          </>
+                        ) : null}
+                        {walletBal?.diffUsd != null ? (
+                          <span className={`num ${Math.abs(walletBal.diffUsd) > 5 ? "text-danger" : "text-dim"}`}>
+                            · расхождение с журналом {walletBal.diffUsd >= 0 ? "+" : ""}
+                            {usd(walletBal.diffUsd)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <Segmented<RangeKey> value={range} options={RANGES} onChange={setRange} />
                 </div>

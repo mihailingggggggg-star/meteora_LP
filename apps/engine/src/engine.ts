@@ -1207,10 +1207,11 @@ export class Engine {
         });
       } catch (err: any) {
         const msg = String(err?.message ?? err);
-        if (env.live.dryRun) {
-          // Репетиция: ничего не отправлялось, поэтому это не авария —
-          // откатываем запись и ждём следующего кандидата, торговлю не останавливаем.
-          journal("WARN", `pos#${id}: репетиция не прошла (${msg}) — откат, продолжаем`, {
+        // «Недостаточно средств» и лимиты слотов — это не авария, а нормальное состояние
+        // (вывели SOL, позиция уже занята). Такую попытку просто откатываем без HALT.
+        const soft = /недостаточно SOL|нет нужных токенов|лимит позиций|сумма позиции слишком мала/i.test(msg);
+        if (env.live.dryRun || soft) {
+          journal("WARN", `pos#${id}: вход не выполнен (${msg}) — откат, продолжаем`, {
             position: id,
             pool: plan.pool.name,
             error: msg,
@@ -2354,6 +2355,35 @@ export class Engine {
       cash: this.cash,
     });
     return { before, after: { deposit: this.deposit, cash: this.cash } };
+  }
+
+  /**
+   * В live капитал для расчёта размера позиции берём С КОШЕЛЬКА, а не из демо-настройки.
+   * Иначе бот планирует сделку на $500 при 0.5 SOL на счету и падает с «недостаточно SOL».
+   * Обновляем только когда открытых позиций нет (чтобы не сбить учёт).
+   */
+  async syncLiveCapital(force = false): Promise<void> {
+    if (this.mode !== "live" || !live.armed()) return;
+    if (this.positions.length > 0) return;
+    try {
+      const bal = await live.walletBalance();
+      if (!bal || bal.totalUsd <= 0) return;
+      const usd = Math.max(10, bal.totalUsd);
+      if (!force && Math.abs(usd - this.deposit) / Math.max(1, this.deposit) <= 0.03) return;
+      journal(
+        "BOOT",
+        `live: торговый капитал по кошельку $${usd.toFixed(2)} (SOL ${bal.sol.toFixed(3)} ≈ $${bal.solUsd.toFixed(2)}, токенов на $${(usd - bal.solUsd).toFixed(2)}) — было $${this.deposit.toFixed(2)}`,
+        { deposit: usd, sol: bal.sol, solUsd: bal.solUsd, previous: this.deposit },
+      );
+      this.deposit = usd;
+      this.cash = usd;
+      this.peakEquity = usd;
+      this.nextMilestone = usd * 1.1;
+      this.persist();
+      this.snapshotEquityNow();
+    } catch {
+      /* нет RPC — оставляем как есть */
+    }
   }
 
   // ─────────────────────────── helpers / dto

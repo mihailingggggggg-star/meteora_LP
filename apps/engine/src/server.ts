@@ -418,6 +418,17 @@ export function startServer() {
       }
       if (p === "/api/live/status") return json(res, 200, live.status());
 
+      // реальные цифры с кошелька (SOL + токены) и сверка с журналом
+      if (p === "/api/live/balance") {
+        const bal = await live.walletBalance();
+        const eq = engine.getEquity();
+        return json(res, 200, {
+          ...bal,
+          ledger: { equity: eq.equity, cash: eq.cash, inPositions: eq.inPositions, deposit: engine.deposit },
+          diffUsd: bal.address ? bal.totalUsd - eq.equity : null,
+        });
+      }
+
       // ── кошелёк: подключение/отключение прямо из интерфейса
       if (p === "/api/live/wallet" && req.method === "POST") {
         const body = await readBody(req);

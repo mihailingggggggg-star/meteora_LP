@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, ChartPie, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { CalendarDays, ChartPie, RefreshCw, TrendingDown, TrendingUp, Wallet } from "lucide-react";
 import { Card, Chip, FadeIn, Muted, Segmented, Stat } from "@/components/ui/kit";
 import { EquityChart } from "@/components/charts/equity-chart";
 import { PnlBars } from "@/components/charts/pnl-bars";
@@ -28,6 +28,37 @@ export default function AnalyticsPage() {
     }
     return `range=${range}`;
   }, [range, from, to]);
+
+  const [walletBal, setWalletBal] = useState<any>(null);
+  const [mode, setMode] = useState<string>("demo");
+
+  useEffect(() => {
+    void engineGet<any>("/state")
+      .then((st) => setMode(st?.mode ?? "demo"))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "live") {
+      setWalletBal(null);
+      return;
+    }
+    let stop = false;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/engine/live/balance", { cache: "no-store" });
+        if (r.ok && !stop) setWalletBal(await r.json());
+      } catch {
+        /* нет RPC */
+      }
+    };
+    void load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [mode]);
 
   useEffect(() => {
     let alive = true;
@@ -84,6 +115,42 @@ export default function AnalyticsPage() {
           </Card>
         </FadeIn>
       )}
+
+      {mode === "live" ? (
+        <FadeIn>
+          <Card className="flex flex-wrap items-center gap-x-5 gap-y-2 p-4">
+            <div className="flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-mint" />
+              <span className="text-[12px] font-medium">Кошелёк (он-чейн)</span>
+            </div>
+            <div className="text-[12px]">
+              <span className="text-dim">SOL: </span>
+              <span className="num text-ink">{(walletBal?.sol ?? 0).toFixed(4)}</span>
+              <span className="num text-muted"> ≈ {usd(walletBal?.solUsd ?? 0)}</span>
+            </div>
+            <div className="text-[12px]">
+              <span className="text-dim">Токены: </span>
+              <span className="num text-accent2">
+                {usd((walletBal?.totalUsd ?? 0) - (walletBal?.solUsd ?? 0))}
+              </span>
+              {walletBal?.tokens?.length ? (
+                <span className="ml-1 text-[10.5px] text-dim">({walletBal.tokens.length} шт.)</span>
+              ) : null}
+            </div>
+            <div className="text-[12px]">
+              <span className="text-dim">Всего: </span>
+              <span className="num text-mint">{usd(walletBal?.totalUsd ?? 0)}</span>
+            </div>
+            {walletBal?.diffUsd != null ? (
+              <div className={`text-[11px] ${Math.abs(walletBal.diffUsd) > 5 ? "text-danger" : "text-dim"}`}>
+                расхождение с журналом {walletBal.diffUsd >= 0 ? "+" : ""}
+                {usd(walletBal.diffUsd)}
+              </div>
+            ) : null}
+            <span className="ml-auto text-[10.5px] text-dim">обновляется каждые 30 с</span>
+          </Card>
+        </FadeIn>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <FadeIn delay={0.02}>

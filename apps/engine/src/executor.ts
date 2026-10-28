@@ -184,12 +184,13 @@ export function armed(): boolean {
 
 export function readiness(): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
+  const src = secretSource();
   if (env.mode !== "live") reasons.push("BOT_MODE=demo — движок считает симуляцию");
   if (!env.live.enabled) reasons.push("LIVE_EXECUTION=false — реальные транзакции выключены");
-  if (!env.live.secret) reasons.push("нет ключа кошелька (TRADING_WALLET_SECRET_BASE58)");
+  // ключ может быть подключён из интерфейса (БД) — проверяем оба источника
+  if (src.from === "none") reasons.push("кошелёк не подключён — подключите в разделе «Боевой режим»");
   else if (!loadWallet()) reasons.push(walletError ?? "ключ не загрузился");
-  if (!env.live.pubkey) reasons.push("TRADING_WALLET_PUBKEY не задан — адрес кошелька не сверяется");
-  if (!alertsEnabled()) reasons.push("TG_BOT_TOKEN/TG_CHAT_ID не заданы — алертов не будет");
+  if (alertsEnabled() === false) reasons.push("TG_BOT_TOKEN/TG_CHAT_ID не заданы — алертов не будет");
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -394,6 +395,56 @@ async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPr
     outAmount: String(quote.outAmount),
     lamports: lamports.toString(),
   });
+}
+
+export type WalletBalance = {
+  sol: number;
+  solUsd: number;
+  tokens: { mint: string; amount: number; usd: number }[];
+  totalUsd: number;
+  address: string | null;
+};
+
+/** Реальный баланс кошелька: SOL + токены, оценка в USD через Jupiter Price API. */
+export async function walletBalance(): Promise<WalletBalance> {
+  const w = loadWallet();
+  if (!w) return { sol: 0, solUsd: 0, tokens: [], totalUsd: 0, address: null };
+
+  const [lamports, accounts] = await withRpc(async (conn) => {
+    const bal = await conn.getBalance(w.publicKey);
+    const accs = await conn.getParsedTokenAccountsByOwner(w.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+    return [bal, accs.value] as const;
+  });
+
+  const holdings = new Map<string, number>();
+  for (const acc of accounts) {
+    const info: any = (acc.account as any)?.data?.parsed?.info;
+    const amount = Number(info?.tokenAmount?.uiAmount ?? 0);
+    const mint = String(info?.mint ?? "");
+    if (!mint || !(amount > 0)) continue;
+    holdings.set(mint, (holdings.get(mint) ?? 0) + amount);
+  }
+
+  const ids = [env.wsolMint, ...holdings.keys()].join(",");
+  let prices: Record<string, number> = {};
+  try {
+    const res = await fetch(`https://lite-api.jup.ag/price/v3?ids=${ids}`);
+    if (res.ok) {
+      const data: any = await res.json();
+      for (const [mint, v] of Object.entries(data ?? {})) prices[mint] = Number((v as any)?.usdPrice ?? 0);
+    }
+  } catch {
+    /* без цен покажем только SOL */
+  }
+
+  const sol = lamports / 1e9;
+  const solUsd = sol * (prices[env.wsolMint] ?? 0);
+  const tokens = [...holdings.entries()]
+    .map(([mint, amount]) => ({ mint, amount, usd: amount * (prices[mint] ?? 0) }))
+    .filter((t) => t.usd >= 0.5)
+    .sort((a, b) => b.usd - a.usd);
+
+  return { sol, solUsd, tokens, totalUsd: solUsd + tokens.reduce((s, t) => s + t.usd, 0), address: w.publicKey.toBase58() };
 }
 
 export async function solBalance(): Promise<number> {
