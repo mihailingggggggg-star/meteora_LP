@@ -360,23 +360,39 @@ async function waitForTokenBalance(mint: string, need: bigint, tries = 6): Promi
 }
 
 /**
+ * Сколько реально доступно для входа по этому минту.
+ *
+ * Для SOL — нативные ламports минус резерв газа. Раньше здесь вызывался
+ * tokenBalanceRaw(WSOL) и возвращал 0: отдельного WSOL-аккаунта у бота нет,
+ * DLMM сам заворачивает SOL. Из-за этого КАЖДЫЙ вход в SOL-пару падал с
+ * «на кошельке нет нужных токенов» уже после того, как токен был куплен.
+ */
+async function availableForMint(mint: string, reserveLamports: number): Promise<bigint> {
+  if (mint === env.wsolMint) {
+    const lamports = await solBalance();
+    return BigInt(Math.max(0, Math.floor(lamports - reserveLamports)));
+  }
+  return tokenBalanceRaw(mint);
+}
+
+/**
  * Докупка токеновой половины через Jupiter.
  *
  * Зачем: симметричная позиция 50/50 требует ОБА токена. На кошельке бота лежит SOL —
  * без этого шага первая же попытка открыть позицию падала бы по «insufficient funds»
  * (и мы бы «жгли» комиссию на неудачной транзакции).
  */
-async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPriceUsd: number): Promise<void> {
+async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPriceUsd: number): Promise<bigint> {
   const w = loadWallet();
   if (!w) throw new Error("кошелёк не загружен");
-  if (needRaw <= 0n) return;
+  if (needRaw <= 0n) return 0n;
 
   const have = await tokenBalanceRaw(mint);
-  if (have >= needRaw) return;
+  if (have >= needRaw) return 0n;
   const shortRaw = needRaw - have;
   // сумма в SOL с запасом 2 % на проскальзывание и округление
   const lamports = BigInt(Math.ceil((usdNeed * (Number(shortRaw) / Number(needRaw))) / Math.max(1e-9, solPriceUsd) * 1e9 * 1.02));
-  if (lamports <= 0n) return;
+  if (lamports <= 0n) return 0n;
 
   journal("LIVE", `докупка токена под 50/50: не хватает ${shortRaw.toString()} (≈${(Number(lamports) / 1e9).toFixed(4)} SOL)`, {
     mint,
@@ -423,7 +439,7 @@ async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPr
 
   if (env.live.dryRun) {
     journal("LIVE", "докупка токена: DRY-RUN, транзакция не отправлена", { mint, lamports: lamports.toString() });
-    return;
+    return 0n;
   }
 
   tx.sign([w]);
@@ -437,12 +453,71 @@ async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPr
     outAmount: String(quote.outAmount),
     lamports: lamports.toString(),
   });
+  return BigInt(String(quote.outAmount));
+}
+/**
+ * Продажа токена обратно в SOL. Нужна для двух вещей:
+ *  1) откат после сорванного входа — купленный токен не должен оставаться «мешком»;
+ *  2) разовая чистка пыли, оставшейся от прошлых сбоев (scripts/recover-dust.ts).
+ */
+export async function sellTokenToSol(
+  mint: string,
+  rawAmount: bigint,
+  slippageBps = 400,
+): Promise<{ signature: string; lamports: number }> {
+  const w = loadWallet();
+  if (!w) throw new Error("кошелёк не загружен");
+  if (rawAmount <= 0n) throw new Error("нечего продавать");
+  const jf = async (url: string, init?: RequestInit, tries = 3): Promise<Response> => {
+    let last: Response | null = null;
+    for (let i = 0; i < tries; i++) {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      last = res;
+      if (res.status === 429) {
+        await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+        continue;
+      }
+      return res;
+    }
+    return last as Response;
+  };
+  const q = await jf(
+    `${env.jupiterBase}/quote?inputMint=${mint}&outputMint=${env.wsolMint}&amount=${rawAmount.toString()}&slippageBps=${slippageBps}`,
+  );
+  if (!q.ok) throw new Error(`jupiter: котировка на продажу недоступна (${q.status})`);
+  const quote: any = await q.json();
+  const s = await jf(`${env.jupiterBase}/swap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      quoteResponse: quote,
+      userPublicKey: w.publicKey.toBase58(),
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+    }),
+  });
+  if (!s.ok) throw new Error(`jupiter: сборка swap на продажу не удалась (${s.status})`);
+  const { swapTransaction } = (await s.json()) as { swapTransaction: string };
+  const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
+  tx.sign([w]);
+  const sig = await withRpc((conn) => conn.sendTransaction(tx, { maxRetries: 3 }));
+  await withRpc((conn) => conn.confirmTransaction(sig, "confirmed"));
+  const lamports = Number(quote?.outAmount ?? 0);
+  journal("LIVE", `продажа токена в SOL: +${(lamports / 1e9).toFixed(4)} SOL`, {
+    mint,
+    amount: rawAmount.toString(),
+    signature: sig,
+  });
+  return { signature: sig, lamports };
 }
 
 export type WalletBalance = {
   sol: number;
   solUsd: number;
-  tokens: { mint: string; amount: number; usd: number }[];
+  tokens: { mint: string; amount: number; usd: number; priced: boolean }[];
+  /** токены без цены в Jupiter — они не входят в totalUsd, но видны в списке */
+  unpricedCount: number;
   totalUsd: number;
   address: string | null;
 };
@@ -450,12 +525,22 @@ export type WalletBalance = {
 /** Реальный баланс кошелька: SOL + токены, оценка в USD через Jupiter Price API. */
 export async function walletBalance(): Promise<WalletBalance> {
   const w = loadWallet();
-  if (!w) return { sol: 0, solUsd: 0, tokens: [], totalUsd: 0, address: null };
+  if (!w) return { sol: 0, solUsd: 0, tokens: [], unpricedCount: 0, totalUsd: 0, address: null };
 
   const [lamports, accounts] = await withRpc(async (conn) => {
     const bal = await conn.getBalance(w.publicKey);
-    const accs = await conn.getParsedTokenAccountsByOwner(w.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
-    return [bal, accs.value] as const;
+    // ОБЕ токен-программы: мемкоины всё чаще Token-2022, а старый код смотрел
+    // только Tokenkeg — токены просто не попадали в отчёт по кошельку.
+    const all: any[] = [];
+    for (const pid of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
+      try {
+        const accs = await conn.getParsedTokenAccountsByOwner(w.publicKey, { programId: new PublicKey(pid) });
+        all.push(...accs.value);
+      } catch {
+        /* программы может не быть в ответе RPC — не критично */
+      }
+    }
+    return [bal, all] as const;
   });
 
   const holdings = new Map<string, number>();
@@ -482,11 +567,25 @@ export async function walletBalance(): Promise<WalletBalance> {
   const sol = lamports / 1e9;
   const solUsd = sol * (prices[env.wsolMint] ?? 0);
   const tokens = [...holdings.entries()]
-    .map(([mint, amount]) => ({ mint, amount, usd: amount * (prices[mint] ?? 0) }))
-    .filter((t) => t.usd >= 0.5)
-    .sort((a, b) => b.usd - a.usd);
+    .map(([mint, amount]) => {
+      const price = prices[mint] ?? 0;
+      return { mint, amount, usd: amount * price, priced: price > 0 };
+    })
+    // без цены токен раньше просто ИСЧЕЗАЛ из отчёта — теперь показываем его,
+    // но в totalUsd он не входит (честнее, чем рисовать ноль или прятать)
+    .filter((t) => t.usd >= 0.5 || !t.priced)
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 12);
+  const unpricedCount = tokens.filter((t) => !t.priced).length;
 
-  return { sol, solUsd, tokens, totalUsd: solUsd + tokens.reduce((s, t) => s + t.usd, 0), address: w.publicKey.toBase58() };
+  return {
+    sol,
+    solUsd,
+    tokens,
+    unpricedCount,
+    totalUsd: solUsd + tokens.reduce((s, t) => s + (t.priced ? t.usd : 0), 0),
+    address: w.publicKey.toBase58(),
+  };
 }
 
 export async function solBalance(): Promise<number> {
@@ -561,26 +660,53 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
   const xIsWsol = pool.tokenX.address === env.wsolMint;
   const tokenMint = xIsWsol ? pool.tokenY.address : pool.tokenX.address;
   const tokenNeed = xIsWsol ? amountY : amountX;
-  await ensureToken(tokenMint, tokenNeed, capital / 2, args.solPriceUsd);
+  // Если вход сорвётся ПОСЛЕ покупки токена, купленное продаём обратно в SOL:
+  // иначе на кошельке остаются «брошенные» мешки, а следующая попытка докупает ещё раз.
+  let boughtRaw = 0n;
+  let amountXuse = 0n;
+  let amountYuse = 0n;
+  try {
+    boughtRaw = await ensureToken(tokenMint, tokenNeed, capital / 2, args.solPriceUsd);
 
   // Фактические балансы могут быть меньше расчётных (проскальзывание при докупке,
   // округление, комиссия за перевод). Если отправить больше, чем есть,
   // транзакция упадёт на симуляции — поэтому режем суммы по факту.
-  const balXraw = await tokenBalanceRaw(pool.tokenX.address);
-  const balYraw = await tokenBalanceRaw(pool.tokenY.address);
-  const amountXuse = amountX > balXraw ? balXraw : amountX;
-  const amountYuse = amountY > balYraw ? balYraw : amountY;
-  if (amountXuse <= 0n || amountYuse <= 0n) {
-    throw new Error("на кошельке нет нужных токенов для входа (после докупки)");
+    // SOL-сторона проверяется по нативному балансу ламports, а не по WSOL-аккаунту:
+    // отдельного WSOL-ATA у бота нет, DLMM заворачивает SOL сам. Раньше здесь
+    // получался 0 и КАЖДЫЙ вход в SOL-пару отменялся уже после покупки токена.
+    const balXraw = await availableForMint(pool.tokenX.address, reserve);
+    const balYraw = await availableForMint(pool.tokenY.address, reserve);
+    amountXuse = amountX > balXraw ? balXraw : amountX;
+    amountYuse = amountY > balYraw ? balYraw : amountY;
+    if (amountXuse <= 0n || amountYuse <= 0n) {
+      throw new Error("на кошельке нет нужных токенов для входа (после докупки)");
+    }
+    if (amountXuse !== amountX || amountYuse !== amountY) {
+      journal("WARN", `суммы входа урезаны по балансу: X ${amountX}→${amountXuse}, Y ${amountY}→${amountYuse}`, {
+        position: args.positionId,
+        amountX: amountXuse.toString(),
+        amountY: amountYuse.toString(),
+      });
+    }
+  } catch (err: any) {
+    // вход не состоялся — возвращаем купленный токен в SOL, чтобы не терять деньги
+    if (boughtRaw > 0n) {
+      try {
+        const back = await sellTokenToSol(tokenMint, boughtRaw);
+        journal("LIVE", `вход отменён — докупленный токен продан обратно: +${(back.lamports / 1e9).toFixed(4)} SOL`, {
+          mint: tokenMint,
+          soldRaw: boughtRaw.toString(),
+          lamports: back.lamports,
+        });
+      } catch (e2: any) {
+        journal("WARN", `вход отменён, но продать токен обратно не удалось: ${e2?.message ?? e2}`, {
+          mint: tokenMint,
+          soldRaw: boughtRaw.toString(),
+        });
+      }
+    }
+    throw err;
   }
-  if (amountXuse !== amountX || amountYuse !== amountY) {
-    journal("WARN", `суммы входа урезаны по балансу: X ${amountX}→${amountXuse}, Y ${amountY}→${amountYuse}`, {
-      position: args.positionId,
-      amountX: amountXuse.toString(),
-      amountY: amountYuse.toString(),
-    });
-  }
-
   const opId = opStart("OPEN", args.positionId, {
     pool: pool.address,
     capital,

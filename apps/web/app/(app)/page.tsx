@@ -167,6 +167,7 @@ export default function DashboardPage() {
                         {walletBal?.tokens?.length ? (
                           <span className="num text-accent2">
                             + токенов {usd((walletBal.totalUsd ?? 0) - (walletBal.solUsd ?? 0))}
+                            {walletBal.unpricedCount ? ` (${walletBal.unpricedCount} без цены)` : ""}
                           </span>
                         ) : null}
                         {walletBal?.totalUsd ? (

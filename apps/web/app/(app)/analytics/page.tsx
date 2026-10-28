@@ -134,7 +134,7 @@ export default function AnalyticsPage() {
                 {usd((walletBal?.totalUsd ?? 0) - (walletBal?.solUsd ?? 0))}
               </span>
               {walletBal?.tokens?.length ? (
-                <span className="ml-1 text-[10.5px] text-dim">({walletBal.tokens.length} шт.)</span>
+                <span className="ml-1 text-[10.5px] text-dim">({walletBal.tokens.length} шт.{walletBal.unpricedCount ? `, ${walletBal.unpricedCount} без цены` : ""})</span>
               ) : null}
             </div>
             <div className="text-[12px]">

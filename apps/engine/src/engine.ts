@@ -1233,6 +1233,9 @@ export class Engine {
           db.prepare(`DELETE FROM positions WHERE id = ?`).run(id);
           this.positions = this.positions.filter((p) => p.id !== id);
           this.cash += spend;
+          // Пул блокируем на 30 минут: иначе следующий скан снова берёт того же
+          // кандидата, снова покупает токен и снова срывается — SOL уходит на докупки.
+          this.blockedPools.set(plan.pool.address, Date.now() + 30 * 60_000);
           this.persist();
           return;
         }
