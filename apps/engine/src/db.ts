@@ -242,3 +242,18 @@ for (const ddl of [
     /* колонка уже есть */
   }
 }
+
+// ── миграция v2: семантика fees_usd у ЗАКРЫТЫХ позиций
+// Раньше при закрытии писалась сумма (accrued + claimed), а карточка/аналитика
+// прибавляют claimed отдельно — комиссии считались дважды (3 цента → 6).
+// Теперь fees_usd = незабранные (как у открытых), поэтому старые строки правим.
+if (!getSetting<boolean>("migration.fees_v2", false)) {
+  const res = db
+    .prepare(
+      `UPDATE positions SET fees_usd = fees_usd - claimed_usd
+       WHERE status = 'closed' AND claimed_usd > 0 AND fees_usd > claimed_usd`,
+    )
+    .run();
+  setSetting("migration.fees_v2", true);
+  console.log(`[db] fees_v2: исправлено строк ${res.changes}`);
+}

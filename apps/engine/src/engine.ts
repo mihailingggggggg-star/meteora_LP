@@ -2466,7 +2466,10 @@ export class Engine {
     ).run(
       Date.now(),
       price,
-      pos.feesAccrued + pos.feesClaimed,
+      // ВАЖНО: fees_usd — это НЕзабранные комиссии, как у открытых позиций.
+      // Раньше здесь писалась сумма (accrued + claimed), и карточка, прибавляя
+      // claimed ещё раз, показывала комиссии дважды (3 цента превращались в 6).
+      pos.feesAccrued,
       fairUsd - pos.capital,
       pnl,
       pnlPct,
