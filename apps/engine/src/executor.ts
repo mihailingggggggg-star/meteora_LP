@@ -293,7 +293,14 @@ async function sendAll(txs: Transaction[], extraSigners: Keypair[], label: strin
         const sim = await conn.simulateTransaction(tx, [w, ...extraSigners]);
         if (sim.value.err) {
           const logs = (sim.value.logs ?? []).slice(-4).join(" | ");
-          throw new Error(`симуляция не прошла: ${JSON.stringify(sim.value.err)} · ${logs}`);
+          const msg = `симуляция не прошла: ${JSON.stringify(sim.value.err)} · ${logs}`;
+          if (env.live.dryRun) {
+            // репетиция: транзакцию всё равно не отправляем, а токены не покупались —
+            // значит и балансы не те. Логируем и идём дальше, торговлю не останавливаем.
+            journal("WARN", `${label}: репетиция — симуляция не прошла (${msg})`, { label });
+          } else {
+            throw new Error(msg);
+          }
         }
         journal("LIVE", `${label}: симуляция ok (units ${sim.value.unitsConsumed ?? "?"})`, {
           label,
@@ -678,6 +685,11 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
     const balYraw = await availableForMint(pool.tokenY.address, reserve);
     amountXuse = amountX > balXraw ? balXraw : amountX;
     amountYuse = amountY > balYraw ? balYraw : amountY;
+    if (env.live.dryRun) {
+      // репетиция ничего не покупает: проверяем логику входа, а не наличие токена
+      amountXuse = amountX;
+      amountYuse = amountY;
+    }
     if (amountXuse <= 0n || amountYuse <= 0n) {
       throw new Error("на кошельке нет нужных токенов для входа (после докупки)");
     }
