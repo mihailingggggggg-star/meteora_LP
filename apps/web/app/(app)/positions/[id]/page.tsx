@@ -604,7 +604,7 @@ export default function PositionDetail() {
         })
         .catch(() => alive && setNotFound(true));
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 4000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -808,11 +808,19 @@ export default function PositionDetail() {
               </Chip>
               <Chip tone="neutral">#{detail.id}</Chip>
               <Chip tone="neutral">сетка ±{pctPlain(view.rangePct * 100, 2)}</Chip>
+              {isOpen && live ? (
+                live.source === "chain" ? (
+                  <Chip tone="mint">цепочка · {live.chainAgeSec ?? 0} с</Chip>
+                ) : (
+                  <Chip tone="neutral">модель{live.chainError ? " · нет данных" : ""}</Chip>
+                )
+              ) : null}
             </div>
             <div className="num mt-0.5 text-[11px] text-dim">
               открыта {dateTime(detail.opened_at)}
               {isOpen
-                ? ` · ${hours(live?.timeInTradeHours ?? 0)} · ${live?.inRange ? "в диапазоне" : "граница пробита"}`
+                ? ` · ${hours(live?.timeInTradeHours ?? 0)} · ${live?.inRange ? "в диапазоне" : "граница пробита"}` +
+                  (live?.chainActiveBin != null ? ` · бин ${live.chainActiveBin}` : "")
                 : detail.closed_at
                   ? ` · закрыта ${dateTime(detail.closed_at)}`
                   : ""}

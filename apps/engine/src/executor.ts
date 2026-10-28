@@ -859,6 +859,58 @@ export async function claimFees(positionId: number, poolAddress: string): Promis
 
 // ─────────────────────────────── сверка
 
+/**
+ * Позиция, прочитанная ИЗ ЦЕПОЧКИ (источник правды в live-режиме).
+ * Суммы — в сырых единицах токенов, как их отдаёт DLMM.
+ */
+export type ChainPos = {
+  positionPubkey: string;
+  activeBinId: number;
+  lowerBinId: number;
+  upperBinId: number;
+  totalX: string;
+  totalY: string;
+  feeX: string;
+  feeY: string;
+  claimedFeeX: string;
+  claimedFeeY: string;
+  at: number;
+};
+
+/**
+ * Читает состояние позиции из DLMM: сколько токенов реально лежит в бинах,
+ * сколько комиссий накоплено и не забрано, в каком бине сейчас цена.
+ * Возвращает null, если позиции в цепочке нет (закрыта/перенесена вручную).
+ */
+export async function chainPosition(poolAddress: string, positionPubkey: string): Promise<ChainPos | null> {
+  const w = loadWallet();
+  if (!w) return null;
+  return withRpc(async (conn) => {
+    const dlmm = await DLMM.create(conn, new PublicKey(poolAddress), { cluster: clusterOf() });
+    const [active, mine] = await Promise.all([
+      dlmm.getActiveBin(),
+      dlmm.getPositionsByUserAndLbPair(w.publicKey),
+    ]);
+    const found: any = (mine.userPositions ?? []).find((p: any) => p.publicKey.toBase58() === positionPubkey);
+    if (!found) return null;
+    const d: any = found.positionData ?? {};
+    const str = (v: any) => (v == null ? "0" : String(v.toString()));
+    return {
+      positionPubkey,
+      activeBinId: Number(active?.binId ?? 0),
+      lowerBinId: Number(d.lowerBinId ?? 0),
+      upperBinId: Number(d.upperBinId ?? 0),
+      totalX: str(d.totalXAmount),
+      totalY: str(d.totalYAmount),
+      feeX: str(d.feeX),
+      feeY: str(d.feeY),
+      claimedFeeX: str(d.totalClaimedFeeXAmount),
+      claimedFeeY: str(d.totalClaimedFeeYAmount),
+      at: Date.now(),
+    } satisfies ChainPos;
+  });
+}
+
 export type ReconcileResult = {
   ok: boolean;
   sol: number;

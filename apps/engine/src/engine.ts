@@ -103,6 +103,18 @@ type RtPos = {
   tokenUsd: number;
   positionValue: number;
   equity: number;
+  /** адрес позиции в цепочке (DLMM position pubkey) — для чтения реальных цифр */
+  onchainPubkey?: string | null;
+  /** когда последний раз читали позицию из цепочки (только live) */
+  chainAt?: number;
+  /** последняя ошибка чтения цепочки — чтобы карточка честно показала «модель» */
+  chainError?: string | null;
+  chainActiveBin?: number;
+  chainLowerBin?: number;
+  chainUpperBin?: number;
+  chainInRange?: boolean;
+  /** комиссии, уже забранные из цепочки (сумма за всё время) */
+  chainClaimedUsd?: number;
 };
 
 type LogLine = { ts: number; type: string; text: string };
@@ -551,6 +563,7 @@ export class Engine {
           solUsd: row.capital,
           tokenUsd: 0,
           positionValue: row.capital,
+          onchainPubkey: row.onchain_pubkey ?? null,
           equity: row.capital,
         });
         void this.ensureWatch(row.pool);
@@ -1790,6 +1803,62 @@ export class Engine {
     return true;
   }
 
+  /**
+   * Реальные цифры позиции из цепочки (live).
+   *
+   * Модель (positionValue по бинам + accrueFees по run-rate пула) остаётся только
+   * для прогноза: в бою стоимость, накопленные комиссии и нахождение в диапазоне
+   * читаем из DLMM. TTL 5 с — карточка опрашивает состояние каждые 3 с.
+   * Возвращает true, если значения в позиции обновлены из цепочки.
+   */
+  private async refreshChainTruth(pos: RtPos, force = false): Promise<boolean> {
+    if (this.mode !== "live" || !live.armed()) return false;
+    // адрес позиции пишет executor при успешном открытии — подхватываем его из базы
+    if (!pos.onchainPubkey) {
+      const row = db.prepare(`SELECT onchain_pubkey FROM positions WHERE id = ?`).get(pos.id) as any;
+      if (row?.onchain_pubkey) pos.onchainPubkey = row.onchain_pubkey;
+      else return false;
+    }
+    const now = Date.now();
+    if (!force && pos.chainAt && now - pos.chainAt < 4_000) return !pos.chainError;
+    try {
+      const cp = await live.chainPosition(pos.pool.address, pos.onchainPubkey);
+      if (!cp) {
+        pos.chainError = "позиции нет в цепочке";
+        return false;
+      }
+      const pool = pos.freshPool ?? pos.pool;
+      const decX = pool.tokenX.decimals;
+      const decY = pool.tokenY.decimals;
+      const priceOf = (tok: { address: string; price: number }) =>
+        tok.price > 0 ? tok.price : tok.address === env.wsolMint ? pos.solPriceUsd : pos.tokenPriceUsd;
+      const px = priceOf(pool.tokenX);
+      const py = priceOf(pool.tokenY);
+      if (!px || !py) {
+        pos.chainError = "нет цен токенов";
+        return false;
+      }
+      const x = Number(cp.totalX) / 10 ** decX;
+      const y = Number(cp.totalY) / 10 ** decY;
+      const xIsSol = pool.tokenX.address === env.wsolMint;
+      pos.chainAt = cp.at;
+      pos.chainError = null;
+      pos.chainActiveBin = cp.activeBinId;
+      pos.chainLowerBin = cp.lowerBinId;
+      pos.chainUpperBin = cp.upperBinId;
+      pos.chainInRange = cp.activeBinId >= cp.lowerBinId && cp.activeBinId <= cp.upperBinId;
+      pos.positionValue = x * px + y * py;
+      pos.solUsd = xIsSol ? x * px : y * py;
+      pos.tokenUsd = xIsSol ? y * py : x * px;
+      // комиссии — ровно то, что накопила цепочка и ещё не забрано
+      pos.feesAccrued = (Number(cp.feeX) / 10 ** decX) * px + (Number(cp.feeY) / 10 ** decY) * py;
+      pos.chainClaimedUsd = (Number(cp.claimedFeeX) / 10 ** decX) * px + (Number(cp.claimedFeeY) / 10 ** decY) * py;
+      return true;
+    } catch (err: any) {
+      pos.chainError = String(err?.message ?? err).slice(0, 160);
+      return false;
+    }
+  }
   private async tickPosition(pos: RtPos) {
     const now = Date.now();
     const dtSec = Math.max(0, (now - pos.lastTick) / 1000);
@@ -1881,7 +1950,9 @@ export class Engine {
     }
 
     // ── комиссии в реальном времени (см. accrueFees)
-    pos.feesAccrued += this.accrueFees(pos, dtSec, rel);
+    // ── live: стоимость и комиссии берём ИЗ ЦЕПОЧКИ, модель — только прогноз
+    const chainOk = await this.refreshChainTruth(pos);
+    if (!chainOk) pos.feesAccrued += this.accrueFees(pos, dtSec, rel);
 
     // ── средняя цена входа: себестоимость токенов, которые сейчас держим
     {
@@ -1902,9 +1973,12 @@ export class Engine {
 
     // ── стоимость и сплит
     const val = positionValue(pos.bins, rel);
-    pos.positionValue = val.value;
-    pos.solUsd = val.solUsd;
-    pos.tokenUsd = val.tokenUsd;
+    if (!chainOk) {
+      // цепочка недоступна — показываем модель и честно помечаем это в карточке
+      pos.positionValue = val.value;
+      pos.solUsd = val.solUsd;
+      pos.tokenUsd = val.tokenUsd;
+    }
     pos.equity = this.cash + this.totalLiveValue() + pos.feesAccrued;
 
     // ── заполнение бинов (для карточки)
@@ -1922,8 +1996,8 @@ export class Engine {
       db.prepare(`INSERT INTO pos_alloc (position_id, ts, sol_usd, token_usd, price) VALUES (?,?,?,?,?)`).run(
         pos.id,
         now,
-        val.solUsd,
-        val.tokenUsd,
+        pos.solUsd,
+        pos.tokenUsd,
         price,
       );
     }
@@ -2438,6 +2512,12 @@ export class Engine {
   totalLiveValue(): number {
     let sum = 0;
     for (const p of this.positions) {
+      // в live берём стоимость из цепочки, если она свежая (модель — только фолбэк)
+      const fresh = !!(p.chainAt && Date.now() - p.chainAt < 120_000 && !p.chainError);
+      if (fresh) {
+        sum += p.positionValue;
+        continue;
+      }
       const rel = p.lastPrice / p.entryPrice;
       sum += positionValue(p.bins, rel).value;
     }
@@ -2638,8 +2718,15 @@ export class Engine {
   positionDto(p = this.positions[0]) {
     if (!p) return null;
     const rel = p.lastPrice / p.entryPrice;
-    const val = positionValue(p.bins, rel);
+    // live: показываем цифры из цепочки, модель — только если цепочка недоступна
+    const chainFresh = !!(p.chainAt && Date.now() - p.chainAt < 120_000 && !p.chainError);
+    const val = chainFresh
+      ? { value: p.positionValue, solUsd: p.solUsd, tokenUsd: p.tokenUsd }
+      : positionValue(p.bins, rel);
     const total = val.value || 1;
+    const inRange = chainFresh && p.chainInRange != null
+      ? p.chainInRange
+      : rel <= 1 + p.rangePct && rel >= 1 - p.rangePct;
     return {
       id: p.id,
       pool: p.pool.address,
@@ -2721,10 +2808,22 @@ export class Engine {
           ? ((val.value + p.feesAccrued + p.feesClaimed - p.initialCapital) / p.initialCapital) * 100
           : 0,
       timeInTradeHours: (Date.now() - p.openedAt) / 3600_000,
-      inRange: rel <= 1 + p.rangePct && rel >= 1 - p.rangePct,
+      inRange,
       distanceToUpperPct: ((1 + p.rangePct) / rel - 1) * 100,
       distanceToLowerPct: (rel / (1 - p.rangePct) - 1) * 100,
       equity: this.getEquity().equity,
+      // ── откуда цифры: цепочка или модель
+      source: chainFresh ? "chain" : "model",
+      chainAt: p.chainAt ?? null,
+      chainAgeSec: p.chainAt ? Math.round((Date.now() - p.chainAt) / 1000) : null,
+      chainActiveBin: p.chainActiveBin ?? null,
+      chainRange:
+        p.chainLowerBin != null && p.chainUpperBin != null
+          ? { lower: p.chainLowerBin, upper: p.chainUpperBin }
+          : null,
+      chainInRange: p.chainInRange ?? null,
+      chainClaimedUsd: p.chainClaimedUsd ?? null,
+      chainError: p.chainError ?? null,
     };
   }
 
