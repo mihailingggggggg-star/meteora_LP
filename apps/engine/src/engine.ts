@@ -2265,6 +2265,55 @@ export class Engine {
     await this.closePositionById(first.id, reason, price);
   }
 
+  /**
+   * Полный сброс демо-контура: закрыть все открытые позиции, очистить историю
+   * (сделки, события, срезы капитала, кандидаты, цепочные операции), поставить
+   * депозит заново и СОХРАНИТЬ состояние — иначе после рестарта касса вернётся
+   * из state.json и «чистый лист» не наступит.
+   */
+  async resetDemo(): Promise<{ before: { deposit: number; cash: number; positions: number }; after: { deposit: number; cash: number } }> {
+    const before = { deposit: this.deposit, cash: this.cash, positions: this.positions.length };
+    for (const p of [...this.positions]) {
+      try {
+        await this.closePositionById(p.id, "MANUAL", p.lastPrice);
+      } catch {
+        /* закрываем что можем — ниже всё равно чистим базу */
+      }
+    }
+    this.positions = [];
+    db.prepare(`DELETE FROM positions WHERE mode='demo'`).run();
+    db.prepare(`DELETE FROM equity WHERE mode='demo'`).run();
+    db.prepare(`DELETE FROM position_events`).run();
+    db.prepare(`DELETE FROM candidates`).run();
+    try {
+      db.prepare(`DELETE FROM onchain_ops`).run();
+    } catch {
+      /* таблицы может не быть в старой базе */
+    }
+
+    this.deposit = env.demoDeposit;
+    this.cash = env.demoDeposit;
+    this.banked = 0;
+    this.peakEquity = env.demoDeposit;
+    this.nextMilestone = env.demoDeposit * 1.1;
+    this.halted = false;
+    this.haltReason = null;
+    this.cooldownUntil = 0;
+    this.blockedPools.clear();
+    this.recentlyClosed.clear();
+    this.rotationMarks = [];
+    this.oorEvents.clear();
+    this.tokenCooldowns.clear();
+    this.persist();
+    this.snapshotEquityNow();
+    journal("BOOT", `история сброшена, старт с $${env.demoDeposit}`, {
+      before,
+      deposit: this.deposit,
+      cash: this.cash,
+    });
+    return { before, after: { deposit: this.deposit, cash: this.cash } };
+  }
+
   // ─────────────────────────── helpers / dto
 
   totalLiveValue(): number {

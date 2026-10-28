@@ -490,17 +490,8 @@ export function startServer() {
           else if (engine.positions[0]) await engine.closePosition("MANUAL");
         }
         if (action === "reset" && engine.mode === "demo") {
-          const open = engine.positions[0];
-          if (open) await engine.closePosition("MANUAL", open.lastPrice);
-          db.prepare(`DELETE FROM positions WHERE mode='demo'`).run();
-          db.prepare(`DELETE FROM equity WHERE mode='demo'`).run();
-          db.prepare(`DELETE FROM position_events`).run();
-          db.prepare(`DELETE FROM candidates`).run();
-          engine.deposit = env.demoDeposit;
-          engine.cash = env.demoDeposit;
-          engine.halted = false;
-          engine.positions = [];
-          journal("BOOT", `демо-контур сброшен, депозит $${env.demoDeposit}`);
+          const out = await engine.resetDemo();
+          return json(res, 200, { ...engine.state(), reset: out });
         }
         return json(res, 200, engine.state());
       }
