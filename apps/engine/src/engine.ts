@@ -166,6 +166,7 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   minFeeTvlPct: { min: 0, max: 50 },
   entryCostPct: { min: 0, max: 3 },
   tokenCooldownHours: { min: 0, max: 72 },
+  hardStopPct: { min: 0, max: 50 },
   healthCheckMinutes: { min: 1, max: 120 },
   filterBreachChecks: { min: 1, max: 10, int: true },
   rangeAdjustMinPct: { min: 5, max: 200 },
@@ -244,6 +245,7 @@ export class Engine {
     minFeeTvlPct: number;
     entryCostPct: number;
     tokenCooldownHours: number;
+    hardStopPct: number;
     distribution: "spot" | "curve" | "uniform";
     healthCheckMinutes: number;
     filterBreachChecks: number;
@@ -284,6 +286,7 @@ export class Engine {
     minFeeTvlPct: env.strategy.minFeeTvlPct ?? 1.5,
     entryCostPct: env.strategy.entryCostPct ?? 0.3,
     tokenCooldownHours: env.strategy.tokenCooldownHours ?? 6,
+    hardStopPct: env.strategy.hardStopPct ?? 8,
     // форма распределения по бинам: uniform = Meteora Spot (дефолт), spot у нас = колокол (Curve)
     distribution: env.strategy.distribution,
     healthCheckMinutes: env.strategy.healthCheckMinutes ?? 5,
@@ -1945,7 +1948,32 @@ export class Engine {
       );
     }
 
-    // ── выход за границу сетки: сначала ждём 10 минут, ребаланс только если не вернулась
+    // ── жёсткий стоп по цене: диапазон не защищает от дампа, а стоп — защищает.
+    // Проверяем каждый тик (5 секунд), не дожидаясь грейса и пересмотра фильтров.
+    if (this.settings.hardStopPct > 0) {
+      const lower = pos.entryPrice * (1 - pos.rangePct);
+      const stopPrice = lower * (1 - this.settings.hardStopPct / 100);
+      if (price > 0 && price < stopPrice) {
+        journal(
+          "EXIT_STOP",
+          `pos#${pos.id} жёсткий стоп: цена ${((price / lower - 1) * 100).toFixed(2)}% ниже нижней границы диапазона (порог −${this.settings.hardStopPct}%) → выходим`,
+          {
+            position: pos.id,
+            price,
+            lower,
+            stopPrice,
+            rel: price / pos.entryPrice,
+            hardStopPct: this.settings.hardStopPct,
+            pnl: this.positionDto(pos)?.pnl ?? null,
+          },
+        );
+        this.blockedPools.set(pos.pool.address, now + 2 * 3600_000);
+        await this.closePositionById(pos.id, "EXIT_STOP", price);
+        return;
+      }
+    }
+
+    // ── выход за границу сетки: сначала ждём grace, ребаланс только если не вернулась
     if (now - pos.openedAt < 60_000) return;
     const graceMs = Math.max(1, this.settings.rangeBreakMinutes) * 60_000;
     const action = decideRangeAction({

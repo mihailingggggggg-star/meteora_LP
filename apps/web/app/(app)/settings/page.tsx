@@ -76,6 +76,7 @@ export default function SettingsPage() {
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [tgToken, setTgToken] = useState("");
   const [tgChat, setTgChat] = useState("");
+  const [adminPass, setAdminPass] = useState("");
   const [saving, setSaving] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [journalDay, setJournalDay] = useState<string>("");
@@ -135,6 +136,15 @@ export default function SettingsPage() {
   }, [state, form]);
 
   useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("mt_admin_pass");
+      if (saved) setAdminPass(saved);
+    } catch {
+      /* приватный режим */
+    }
+  }, []);
+
+  useEffect(() => {
     let stop = false;
     engineGet<any>("/live/status")
       .then((d) => {
@@ -147,6 +157,34 @@ export default function SettingsPage() {
       stop = true;
     };
   }, []);
+
+  const saveAdminPass = (v: string) => {
+    setAdminPass(v);
+    try {
+      sessionStorage.setItem("mt_admin_pass", v);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const needPass = () => {
+    if (adminPass.trim()) return true;
+    toast.error("Введите пароль администратора (поле в блоке «Боевой режим»)");
+    return false;
+  };
+
+  const adminFetch = async (path: string, method: "POST" | "DELETE", body?: unknown) => {
+    const res = await fetch(`/api/engine${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-admin-pass": adminPass.trim(),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data } as { ok: boolean; status: number; data: any };
+  };
 
   const refreshLive = async () => {
     try {
@@ -163,15 +201,16 @@ export default function SettingsPage() {
     }
     setBusy(true);
     try {
-      const r = await enginePost<any>("/live/wallet", { secret: secretInput.trim(), pubkey: pubkeyInput.trim() });
-      if (r?.ok) {
-        toast.success(`Кошелёк подключён: ${r.saved.pubkey.slice(0, 4)}…${r.saved.pubkey.slice(-4)}`);
+      if (!needPass()) return;
+      const r = await adminFetch("/live/wallet", "POST", { secret: secretInput.trim(), pubkey: pubkeyInput.trim() });
+      if (r.ok && r.data?.ok) {
+        toast.success(`Кошелёк подключён: ${r.data.saved.pubkey.slice(0, 4)}…${r.data.saved.pubkey.slice(-4)}`);
         setWalletOpen(false);
         setSecretInput("");
         setPubkeyInput("");
-        if (r.status) setLive(r.status);
+        if (r.data.status) setLive(r.data.status);
       } else {
-        toast.error(r?.error ?? "Не удалось сохранить ключ");
+        toast.error(r.data?.error ?? "Не удалось сохранить ключ");
       }
     } catch {
       toast.error("Не удалось сохранить ключ");
@@ -183,9 +222,14 @@ export default function SettingsPage() {
   const disconnectWallet = async () => {
     setBusy(true);
     try {
-      const r = await engineDelete<any>("/live/wallet");
+      if (!needPass()) return;
+      const r = await adminFetch("/live/wallet", "DELETE");
+      if (!r.ok) {
+        toast.error(r.data?.error ?? "Не удалось отключить кошелёк");
+        return;
+      }
       toast.success("Кошелёк отключён");
-      if (r?.status) setLive(r.status);
+      if (r.data?.status) setLive(r.data.status);
       else void refreshLive();
     } catch {
       toast.error("Не удалось отключить кошелёк");
@@ -197,14 +241,13 @@ export default function SettingsPage() {
   const switchMode = async (mode: "demo" | "live", dryRun: boolean, capitalUsd?: number) => {
     setBusy(true);
     try {
-      const res = await fetch("/api/engine/live/mode", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode, dryRun, capitalUsd }),
-      });
+      if (!needPass()) {
+        setConfirmLive(false);
+        return;
+      }
+      const res = await adminFetch("/live/mode", "POST", { mode, dryRun, capitalUsd });
       if (!res.ok) {
-        const j = await res.json().catch(() => ({} as any));
-        toast.error(j?.error ?? "Не удалось переключить режим");
+        toast.error(res.data?.error ?? "Не удалось переключить режим");
         setConfirmLive(false);
         return;
       }
@@ -230,15 +273,16 @@ export default function SettingsPage() {
     }
     setBusy(true);
     try {
-      const r = await enginePost<any>("/live/alerts", { token: tgToken.trim(), chatId: tgChat.trim() }).catch(() => null);
-      if (r?.ok) {
+      if (!needPass()) return;
+      const r = await adminFetch("/live/alerts", "POST", { token: tgToken.trim(), chatId: tgChat.trim() });
+      if (r.ok) {
         toast.success("Алерты настроены — движок перезапускается");
         setAlertsOpen(false);
         setTgToken("");
         setTgChat("");
         setTimeout(() => void refreshLive(), 6000);
       } else {
-        toast.error(r?.error ?? "Не удалось сохранить алерты");
+        toast.error(r.data?.error ?? "Не удалось сохранить алерты");
       }
     } finally {
       setBusy(false);
@@ -448,6 +492,16 @@ export default function SettingsPage() {
                 </Section>
 
                 <Section icon={<ShieldAlert className="h-3.5 w-3.5" />} title="Фаза 5 · защита капитала">
+                  <Field
+                    label="Жёсткий стоп по цене"
+                    hint="на сколько % ниже нижней границы диапазона терпим; 0 — выключен"
+                    value={form.hardStopPct ?? 8}
+                    min={0}
+                    max={30}
+                    step={1}
+                    suffix="%"
+                    onChange={(v) => set({ hardStopPct: v })}
+                  />
                   <Field
                     label="Мин. доходность пула (fee/TVL)"
                     hint="комиссии за сутки на доллар TVL; ниже — пул не окупает ребалансы"
@@ -780,6 +834,17 @@ export default function SettingsPage() {
                       Подключить кошелёк
                     </Button>
                   )}
+                </div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="shrink-0 text-[10.5px] text-dim">Пароль</span>
+                  <input
+                    type="password"
+                    value={adminPass}
+                    onChange={(e) => saveAdminPass(e.target.value)}
+                    placeholder="пароль администратора для действий"
+                    className="w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[11px] text-ink focus:border-accent/50 focus:outline-none"
+                  />
                 </div>
 
                 {state?.mode === "live" ? (

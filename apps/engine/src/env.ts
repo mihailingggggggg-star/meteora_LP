@@ -70,6 +70,8 @@ export const env = {
     entryCostPct: num(process.env.ENTRY_COST_PCT, 0.3),
     /** пауза на токен после серии выходов из диапазона, часы */
     tokenCooldownHours: num(process.env.TOKEN_COOLDOWN_HOURS, 6),
+    /** жёсткий стоп: на сколько % ниже нижней границы диапазона терпим, прежде чем выйти */
+    hardStopPct: num(process.env.HARD_STOP_PCT, 8),
     frictionPct: num(process.env.FRICTION_PCT, 0.15), // издержки свопа при ребалансе
     maxLossPerTradePct: num(process.env.MAX_LOSS_PER_TRADE_PCT, 3.0),
     maxDailyLossPct: num(process.env.MAX_DAILY_LOSS_PCT, 5.0),

@@ -2,6 +2,9 @@ import { SignJWT, jwtVerify } from "jose";
 
 export const COOKIE = "mt_session";
 
+/** Срок жизни сессии в днях (по умолчанию 7 вместо 30 — меньше окно для украденной cookie). */
+export const SESSION_DAYS = Math.max(1, Math.min(30, Number(process.env.SESSION_DAYS || 7)));
+
 /**
  * Ключ подписи сессий.
  *
@@ -50,7 +53,7 @@ export async function createSession(email: string) {
   return new SignJWT({ email, role: "owner" })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("30d")
+    .setExpirationTime(`${SESSION_DAYS}d`)
     .sign(key);
 }
 

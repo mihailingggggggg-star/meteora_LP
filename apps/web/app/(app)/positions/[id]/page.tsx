@@ -568,6 +568,7 @@ const EVENT_STYLE: Record<string, { c: string; bg: string; b: string; label: str
   REBALANCE: { c: "text-accent2", bg: "bg-accent/10", b: "border-accent/20", label: "Ребаланс" },
   RANGE_ADJUST: { c: "text-accent2", bg: "bg-accent/10", b: "border-accent/20", label: "Правка диапазона" },
   EXIT_FILTERS: { c: "text-danger", bg: "bg-danger/10", b: "border-danger/20", label: "Выход: фильтры" },
+  EXIT_STOP: { c: "text-danger", bg: "bg-danger/10", b: "border-danger/20", label: "Жёсткий стоп" },
   FILL: { c: "text-muted", bg: "bg-white/[0.03]", b: "border-white/[0.06]", label: "Бины заполнены" },
   CLAIM: { c: "text-accent2", bg: "bg-accent/10", b: "border-accent/20", label: "Комиссии собраны" },
   CONSECUTIVE_LOSS: { c: "text-danger", bg: "bg-danger/10", b: "border-danger/20", label: "Серия убытков — стоп" },

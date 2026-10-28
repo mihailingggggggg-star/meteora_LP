@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { COOKIE, authConfigured, createSession } from "@/lib/session";
+import { COOKIE, SESSION_DAYS, authConfigured, createSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -109,7 +109,7 @@ export async function POST(req: Request) {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: 60 * 60 * 24 * SESSION_DAYS,
   });
   console.log(`[auth] успешный вход ip=${ip} login=${expectedEmail}`);
   return res;
