@@ -2811,6 +2811,17 @@ export class Engine {
     const inRange = chainFresh && p.chainInRange != null
       ? p.chainInRange
       : rel <= 1 + p.rangePct && rel >= 1 - p.rangePct;
+    // расстояния до границ считаем от АКТИВНОГО БИНА в цепочке — так же, как
+    // показывает Meteora (нижняя граница -342 при активном -328 = -13.0%).
+    // Раньше считали от entryPrice и с перевёрнутой формулой для низа.
+    const stepB = (p.pool.binStep || 0) / 10_000;
+    const chainDist =
+      chainFresh && stepB > 0 && p.chainActiveBin != null && p.chainLowerBin != null && p.chainUpperBin != null
+        ? {
+            lower: (Math.pow(1 + stepB, p.chainLowerBin - p.chainActiveBin) - 1) * 100,
+            upper: (Math.pow(1 + stepB, p.chainUpperBin - p.chainActiveBin) - 1) * 100,
+          }
+        : null;
     return {
       id: p.id,
       pool: p.pool.address,
@@ -2893,8 +2904,10 @@ export class Engine {
           : 0,
       timeInTradeHours: (Date.now() - p.openedAt) / 3600_000,
       inRange,
-      distanceToUpperPct: ((1 + p.rangePct) / rel - 1) * 100,
-      distanceToLowerPct: (rel / (1 - p.rangePct) - 1) * 100,
+      distanceToUpperPct: chainDist ? chainDist.upper : ((1 + p.rangePct) / rel - 1) * 100,
+      distanceToLowerPct: chainDist ? chainDist.lower : ((1 - p.rangePct) / rel - 1) * 100,
+      binsBelow: p.chainActiveBin != null && p.chainLowerBin != null ? p.chainActiveBin - p.chainLowerBin : null,
+      binsAbove: p.chainUpperBin != null && p.chainActiveBin != null ? p.chainUpperBin - p.chainActiveBin : null,
       equity: this.getEquity().equity,
       // ── откуда цифры: цепочка или модель
       source: chainFresh ? "chain" : "model",
