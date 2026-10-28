@@ -140,11 +140,13 @@ export function buildBalancedPlan(opts: {
   //   curve — тяжелее к краям диапазона
   //   uniform — равномерно
   const layout = settings.distribution ?? "spot";
-  const count = Math.max(6, Math.min(70, grid.binsPerSide * 2));
+  // Бины строим ровно по сетке пула: k = −N..N, цена бина = (1+step)^k.
+  // Раньше позиции ставились по «непрерывной» шкале с округлением — центр сетки
+  // уезжал на пол-бина, и модель не совпадала с реальными бинами в цепи.
+  const N = Math.max(3, Math.min(35, grid.binsPerSide));
   const bins: PlanBin[] = [];
-  for (let i = 0; i < count; i++) {
-    const rel = -halfRange + ((i + 0.5) / count) * (2 * halfRange);
-    bins.push({ k: Math.round(rel / step), priceRel: 1 + rel, weight: 0, usd: 0, poolUsd: 0, feePerDay: 0 });
+  for (let k = -N; k <= N; k++) {
+    bins.push({ k, priceRel: Math.pow(1 + step, k), weight: 0, usd: 0, poolUsd: 0, feePerDay: 0 });
   }
   // каждая сторона (выше/ниже цены) получает ровно 50% капитала, форма — по выбранной кривой
   for (const side of ["ask", "bid"] as const) {

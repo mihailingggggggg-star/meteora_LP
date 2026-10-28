@@ -230,3 +230,15 @@ for (const ddl of [
     /* колонка уже есть */
   }
 }
+
+// ── точность восстановления: шаг бина и база комиссий для оценки «убыточности» ребаланса
+for (const ddl of [
+  `ALTER TABLE positions ADD COLUMN bin_step REAL`,
+  `ALTER TABLE positions ADD COLUMN fees_at_rebalance REAL`,
+]) {
+  try {
+    db.exec(ddl);
+  } catch {
+    /* колонка уже есть */
+  }
+}

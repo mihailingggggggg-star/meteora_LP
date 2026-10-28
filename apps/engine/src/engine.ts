@@ -139,7 +139,7 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   minVol1h: { min: 0, max: 1e9 },
   minAgeHours: { min: 0, max: 1e5 },
   rangeAtrMult: { min: 0.1, max: 10 },
-  maxRangePct: { min: 0.2, max: 50 },
+  maxRangePct: { min: 0.2, max: 60 },
   budgetPct: { min: 1, max: 100 },
   frictionPct: { min: 0, max: 5 },
   maxLossPerTradePct: { min: 0.1, max: 100 },
@@ -468,7 +468,7 @@ export class Engine {
             tvl: 0,
             vol24: row.vol24 ?? 0,
             vol1h: 0,
-            binStep: 100,
+            binStep: row.bin_step ?? 100,
             baseFeePct: 0,
             dynamicFeePct: 0,
             protocolFeePct: 0,
@@ -504,7 +504,7 @@ export class Engine {
           rangeNeedsAdjust: false,
           lastRangeAdjustAt: row.last_range_adjust_at ?? 0,
           freshPool: null,
-          feesAtRebalance: (row.fees_usd ?? 0) + (row.claimed_usd ?? 0),
+          feesAtRebalance: row.fees_at_rebalance ?? (row.fees_usd ?? 0) + (row.claimed_usd ?? 0),
           noMoreRebalances: false,
           bins,
           filled: new Set<number>(),
@@ -1113,8 +1113,8 @@ export class Engine {
       );
     const id = Number(info.lastInsertRowid);
     db.prepare(
-      `UPDATE positions SET initial_capital = ?, friction_usd = ?, entry_atr_pct = ?, entry_range_pct = ? WHERE id = ?`,
-    ).run(spend, entryCost, plan.atrPct, plan.rangePct, id);
+      `UPDATE positions SET initial_capital = ?, friction_usd = ?, entry_atr_pct = ?, entry_range_pct = ?, bin_step = ?, fees_at_rebalance = 0 WHERE id = ?`,
+    ).run(spend, entryCost, plan.atrPct, plan.rangePct, plan.pool.binStep, id);
 
     const bins: RtBin[] = plan.bins.map((b) => ({
       k: b.k,
@@ -1384,6 +1384,7 @@ export class Engine {
     const oldCapital = pos.capital;
     const oldRange = pos.rangePct;
     const oldAtr = pos.entryAtrPct;
+    const outMinutes = pos.outSince ? (now - pos.outSince) / 60_000 : null;
     const scale = newCapital / Math.max(1e-9, plan.capital);
 
     const pair = splitPair(freshPool);
@@ -1425,7 +1426,7 @@ export class Engine {
     pos.feesAtRebalance = feesNow;
 
     db.prepare(
-      `UPDATE positions SET capital=?, entry_price=?, p_avg_price=?, p_exit=?, bins=?, rebalances=?, consecutive_losses=?, friction_usd=?, range_pct=?, atr_pct=?, entry_atr_pct=?, entry_range_pct=?, range_adjusts=?, last_range_adjust_at=?, updated_at=? WHERE id=?`,
+      `UPDATE positions SET capital=?, entry_price=?, p_avg_price=?, p_exit=?, bins=?, rebalances=?, consecutive_losses=?, friction_usd=?, range_pct=?, atr_pct=?, entry_atr_pct=?, entry_range_pct=?, range_adjusts=?, last_range_adjust_at=?, bin_step=?, fees_at_rebalance=?, updated_at=? WHERE id=?`,
     ).run(
       pos.capital,
       pos.entryPrice,
@@ -1441,6 +1442,8 @@ export class Engine {
       pos.entryRangePct,
       pos.rangeAdjusts,
       pos.lastRangeAdjustAt,
+      freshPool.binStep,
+      pos.feesAtRebalance,
       Date.now(),
       pos.id,
     );
@@ -1473,7 +1476,7 @@ export class Engine {
         feesSinceRebalance: feesSince,
         binsCount: pos.bins.length,
         expectedDailyPct: plan.expectedDailyPct,
-        outMinutes: pos.outSince ? (now - pos.outSince) / 60_000 : null,
+        outMinutes,
         lost,
       },
     );
@@ -1765,6 +1768,7 @@ export class Engine {
           if (fresh.vol1h >= 0) pos.pool.vol1h = fresh.vol1h;
           if (fresh.binStep > 0) pos.pool.binStep = fresh.binStep;
           if (fresh.fees24 >= 0) pos.pool.fees24 = fresh.fees24;
+          if (fresh.feeTvl24h >= 0) pos.pool.feeTvl24h = fresh.feeTvl24h;
           if (fresh.fees30m >= 0) pos.pool.fees30m = fresh.fees30m;
           if (fresh.fees1h >= 0) pos.pool.fees1h = fresh.fees1h;
           pos.turnover24 = fresh.tvl > 0 ? fresh.vol24 / fresh.tvl : pos.turnover24;

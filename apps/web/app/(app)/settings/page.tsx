@@ -268,10 +268,10 @@ export default function SettingsPage() {
                   />
                   <Field
                     label="Максимальный диапазон"
-                    hint="потолок полуширины сетки в процентах"
+                    hint="потолок полуширины; широкий диапазон = меньше выходов и меньше IL на доллар"
                     value={form.maxRangePct}
                     min={1}
-                    max={10}
+                    max={50}
                     step={0.5}
                     suffix="%"
                     onChange={(v) => set({ maxRangePct: v })}

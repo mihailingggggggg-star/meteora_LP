@@ -59,7 +59,7 @@ export const env = {
     // ── Фаза 2: вход
     budgetPct: num(process.env.POSITION_BUDGET_PCT, 50), // доля депозита на позицию
     rangeAtrMult: num(process.env.RANGE_ATR_MULT, 1.5), // ATR-множитель на 30-минутный горизонт
-    maxRangePct: num(process.env.MAX_RANGE_PCT, 10.0), // максимальная полуширина диапазона, %
+    maxRangePct: num(process.env.MAX_RANGE_PCT, 25.0), // максимальная полуширина диапазона, %
     /** горизонт удержания: диапазон масштабируется как ATR × √(горизонт/30м) */
     rangeHorizonHours: num(process.env.RANGE_HORIZON_HOURS, 4),
     minBinsPerSide: num(process.env.MIN_BINS_PER_SIDE, 9),
