@@ -5,7 +5,7 @@ import { engine, swapWatcher } from "./engine.js";
 import { swapsFor } from "./swaps.js";
 import { solanaStream } from "./stream.js";
 import { db } from "./db.js";
-import { dayKey, journal, journalDays, readJournal, readJournalFull } from "./journal.js";
+import { dayKey, journal, journalDays, readJournal, readJournalFull, readJournalRange } from "./journal.js";
 import { event } from "./db.js";
 import { env } from "./env.js";
 import * as live from "./executor.js";
@@ -510,7 +510,24 @@ export function startServer() {
         return json(res, 200, { ...engine.state(), applied });
       }
       if (p === "/api/journal/download") {
+        // три режима: ?date=YYYY-MM-DD (один день), ?days=N (последние N дней),
+        // ?from=…&to=… (произвольный период) — склеиваются в один markdown
         const asked = q.get("date");
+        const daysN = Number(q.get("days") ?? 0);
+        const from = q.get("from") ?? undefined;
+        const to = q.get("to") ?? undefined;
+
+        if (daysN > 0 || isDayKey(from ?? null) || isDayKey(to ?? null)) {
+          const { text, labels } = readJournalRange({ days: daysN || undefined, from, to });
+          const name = labels.length ? `${labels[0]}..${labels[labels.length - 1]}` : dayKey();
+          res.writeHead(200, {
+            "content-type": "text/markdown; charset=utf-8",
+            "content-disposition": `attachment; filename="meteora-journal-${name}.md"`,
+            "cache-control": "no-store",
+          });
+          return res.end(text || `# Журнал\n\nзаписей нет`);
+        }
+
         const day = isDayKey(asked) ? asked : dayKey();
         const text = readJournalFull(day);
         res.writeHead(200, {

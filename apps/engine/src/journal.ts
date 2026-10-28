@@ -183,20 +183,64 @@ export function readJournal(day: string, limit = 400): string[] {
 /** Полный текст файла — для скачивания. */
 export function readJournalFull(day: string): string {
   const file = fileFor(day);
-  if (!fs.existsSync(file)) return "";
-  return fs.readFileSync(file, "utf8");
+  if (fs.existsSync(file)) return fs.readFileSync(file, "utf8");
+  // прошлые дни ротация сжимает в .gz — читаем и их
+  const gz = `${file}.gz`;
+  if (fs.existsSync(gz)) {
+    try {
+      return require("node:zlib").gunzipSync(fs.readFileSync(gz)).toString("utf8");
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 export function journalDays(limit = 30): string[] {
   try {
     return fs
       .readdirSync(dir)
-      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
-      .map((f) => f.replace(".md", ""))
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md(\.gz)?$/.test(f))
+      .map((f) => f.replace(/\.md(\.gz)?$/, ""))
       .sort()
       .reverse()
       .slice(0, limit);
   } catch {
     return [];
   }
+}
+
+/**
+ * Журнал за несколько дней одним файлом.
+ * Нужно, чтобы не скачивать по одному: ИИ-разбор и разбор инцидентов
+ * удобнее делать по склеенному файлу с разделителями дней.
+ */
+export function readJournalRange(opts: { days?: number; from?: string; to?: string }): { text: string; labels: string[] } {
+  const all = journalDays(365).slice().sort(); // по возрастанию
+  const isDay = (v?: string) => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  let list = all;
+  if (isDay(opts.from) || isDay(opts.to)) {
+    const from = isDay(opts.from) ? opts.from! : all[0];
+    const to = isDay(opts.to) ? opts.to! : all[all.length - 1];
+    list = all.filter((d) => d >= from && d <= to);
+  } else {
+    const n = Math.max(1, Math.min(365, Math.round(opts.days ?? 7)));
+    list = all.slice(-n);
+  }
+  if (!list.length) return { text: "", labels: [] };
+
+  const parts: string[] = [
+    `# Журнал METEORA Terminal · ${list[0]} … ${list[list.length - 1]}`,
+    ``,
+    `> Склеено из ${list.length} дн. (${list.join(", ")}).`,
+    "> Формат строки: [время] ТИП сообщение + JSON-контекст в конце — время UTC.",
+    ``,
+  ];
+  for (const day of list) {
+    const txt = readJournalFull(day).trim();
+    parts.push(`\n---\n\n## ${day}\n`);
+    parts.push(txt || `_записей нет_`);
+    parts.push("");
+  }
+  return { text: parts.join("\n"), labels: list };
 }

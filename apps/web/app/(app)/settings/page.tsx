@@ -69,6 +69,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [journalDay, setJournalDay] = useState<string>("");
+  const [journalDays, setJournalDays] = useState<number>(7);
 
   useEffect(() => {
     engineGet<any>("/journal/days")
@@ -80,6 +81,24 @@ export default function SettingsPage() {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const downloadJournalRange = async () => {
+    try {
+      const res = await fetch(`/api/engine/journal/download?days=${journalDays}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `meteora-journal-${journalDays}d.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Журнал за ${journalDays} дн. скачан`);
+    } catch {
+      toast.error("Не удалось скачать журнал за период");
+    }
+  };
 
   const downloadJournal = async () => {
     try {
@@ -746,11 +765,28 @@ export default function SettingsPage() {
                   ))}
                 </select>
                 <Button variant="mint" size="sm" onClick={downloadJournal}>
-                  Скачать журнал
+                  Скачать день
                 </Button>
               </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  value={journalDays}
+                  onChange={(e) => setJournalDays(Number(e.target.value))}
+                  className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] text-ink focus:border-accent/50 focus:outline-none"
+                >
+                  {[2, 3, 7, 14, 30].map((n) => (
+                    <option key={n} value={n} className="bg-[#171310]">
+                      за {n} дн.
+                    </option>
+                  ))}
+                </select>
+                <Button variant="ghost" size="sm" onClick={downloadJournalRange}>
+                  Скачать период
+                </Button>
+                <span className="text-[11px] text-dim">один файл, дни разделены заголовками</span>
+              </div>
               <Muted className="mt-2 text-[11px]">
-                Хранится 30 дней, прошлые дни автоматически сжимаются в .gz.
+                Хранится 30 дней, прошлые дни автоматически сжимаются в .gz. Период склеивается в один файл — удобно для ИИ-разбора.
               </Muted>
             </Card>
           </FadeIn>
