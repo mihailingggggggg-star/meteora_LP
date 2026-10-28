@@ -180,6 +180,7 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   tokenCooldownHours: { min: 0, max: 72 },
   hardStopPct: { min: 0, max: 50 },
   minPositionUsd: { min: 0.5, max: 500 },
+  maxEntrySlipPct: { min: 0.1, max: 20 },
   healthCheckMinutes: { min: 1, max: 120 },
   filterBreachChecks: { min: 1, max: 10, int: true },
   rangeAdjustMinPct: { min: 5, max: 200 },
@@ -260,6 +261,8 @@ export class Engine {
     tokenCooldownHours: number;
     hardStopPct: number;
     minPositionUsd: number;
+  /** максимальный слиппедж выхода, при котором ещё входим, % */
+  maxEntrySlipPct: number;
     distribution: "spot" | "curve" | "uniform";
     healthCheckMinutes: number;
     filterBreachChecks: number;
@@ -302,6 +305,7 @@ export class Engine {
     tokenCooldownHours: env.strategy.tokenCooldownHours ?? 6,
     hardStopPct: env.strategy.hardStopPct ?? 8,
     minPositionUsd: env.strategy.minPositionUsd ?? 1,
+    maxEntrySlipPct: env.strategy.maxEntrySlipPct ?? 1.5,
     // форма распределения по бинам: uniform = Meteora Spot (дефолт), spot у нас = колокол (Curve)
     distribution: env.strategy.distribution,
     healthCheckMinutes: env.strategy.healthCheckMinutes ?? 5,
@@ -1085,12 +1089,47 @@ export class Engine {
 
   // ─────────────────────────── open / rebalance / close
 
+  /**
+   * Оценка слиппеджа ВЫХОДА ещё до входа: продаём токеновую половину через Jupiter
+   * и смотрим, сколько реально вернётся в SOL. Тонкие пулы отсекаются здесь —
+   * именно они съели сделку #71 (2.79% на выходе при позиции $6).
+   * Возвращает % потерь или null, если котировку получить не удалось.
+   */
+  private async estimateExitSlipPct(pool: Pool, capitalUsd: number): Promise<number | null> {
+    const pair = splitPair(pool);
+    const token = pair.token;
+    const solUsd = pair.solPrice > 0 ? pair.solPrice : 0;
+    if (!token?.address || !(token.price > 0) || !solUsd) return null;
+    const tokenUsd = capitalUsd / 2;
+    const raw = Math.round((tokenUsd / token.price) * 10 ** (token.decimals || 9));
+    if (raw <= 0) return null;
+    const quote = await jupiterQuote(token.address, env.wsolMint, String(raw), 300).catch(() => null);
+    if (!quote || !(quote.outAmount > 0)) return null;
+    const outUsd = (quote.outAmount / 1e9) * solUsd;
+    return Math.max(0, (1 - outUsd / Math.max(1e-9, tokenUsd)) * 100);
+  }
   async openPosition(plan: StrategyPlan) {
     if (this.positions.length >= this.slots) {
       journal("SKIP", `слотов нет (${this.positions.length}/${this.slots}) — ${plan.pool.name} пропущен`);
       return;
     }
     if (this.halted || !this.running) return;
+
+    // ── фильтр слиппеджа выхода (только live: там это реальные деньги)
+    const maxSlip = this.settings.maxEntrySlipPct ?? 1.5;
+    if (this.mode === "live" && maxSlip > 0) {
+      const slip = await this.estimateExitSlipPct(plan.pool, Math.min(plan.capital, this.cash));
+      if (slip != null && slip > maxSlip) {
+        journal("SKIP", `${plan.pool.name}: слиппедж выхода ${slip.toFixed(2)}% > ${maxSlip}% — тонкий пул, не входим`, {
+          pool: plan.pool.address,
+          slipPct: slip,
+          limit: maxSlip,
+          capital: plan.capital,
+        });
+        this.blockedPools.set(plan.pool.address, Date.now() + 30 * 60_000);
+        return;
+      }
+    }
 
     const pair = splitPair(plan.pool);
     const entryPrice = plan.pool.currentPrice;

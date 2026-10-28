@@ -74,6 +74,8 @@ export const env = {
     hardStopPct: num(process.env.HARD_STOP_PCT, 8),
     /** минимальный размер позиции, $ (для тестов можно опустить) */
     minPositionUsd: num(process.env.MIN_POSITION_USD, 1),
+    // не входить в пулы, где выход через Jupiter съедает больше этого % (тонкий стакан)
+    maxEntrySlipPct: num(process.env.MAX_ENTRY_SLIP_PCT, 1.5),
     frictionPct: num(process.env.FRICTION_PCT, 0.15), // издержки свопа при ребалансе
     maxLossPerTradePct: num(process.env.MAX_LOSS_PER_TRADE_PCT, 3.0),
     maxDailyLossPct: num(process.env.MAX_DAILY_LOSS_PCT, 5.0),

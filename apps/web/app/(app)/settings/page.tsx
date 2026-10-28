@@ -503,6 +503,16 @@ export default function SettingsPage() {
                     onChange={(v) => set({ minPositionUsd: v })}
                   />
                   <Field
+                    label="Макс. слиппедж на выходе"
+                    hint="не входим, если продажа токена через Jupiter обещает больше — так отсекаются тонкие пулы"
+                    value={form.maxEntrySlipPct ?? 1.5}
+                    min={0.2}
+                    max={10}
+                    step={0.1}
+                    suffix="%"
+                    onChange={(v) => set({ maxEntrySlipPct: v })}
+                  />
+                  <Field
                     label="Жёсткий стоп по цене"
                     hint="на сколько % ниже нижней границы диапазона терпим; 0 — выключен"
                     value={form.hardStopPct ?? 8}
