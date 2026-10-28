@@ -34,7 +34,7 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-ReadWritePaths=/opt/meteora-terminal/data /opt/meteora-terminal/journal /opt/meteora-terminal/.run
+ReadWritePaths=/opt/meteora-terminal/data /opt/meteora-terminal/journal /opt/meteora-terminal/.run /opt/meteora-terminal/.env
 UMask=0077
 
 [Install]
