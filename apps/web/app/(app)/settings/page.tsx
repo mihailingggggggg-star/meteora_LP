@@ -197,7 +197,17 @@ export default function SettingsPage() {
   const switchMode = async (mode: "demo" | "live", dryRun: boolean, capitalUsd?: number) => {
     setBusy(true);
     try {
-      await enginePost<any>("/live/mode", { mode, dryRun, capitalUsd }).catch(() => null); // движок уходит в рестарт
+      const res = await fetch("/api/engine/live/mode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode, dryRun, capitalUsd }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({} as any));
+        toast.error(j?.error ?? "Не удалось переключить режим");
+        setConfirmLive(false);
+        return;
+      }
       toast.success(
         mode === "live"
           ? dryRun

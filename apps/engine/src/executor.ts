@@ -470,6 +470,24 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
   const tokenNeed = xIsWsol ? amountY : amountX;
   await ensureToken(tokenMint, tokenNeed, capital / 2, args.solPriceUsd);
 
+  // Фактические балансы могут быть меньше расчётных (проскальзывание при докупке,
+  // округление, комиссия за перевод). Если отправить больше, чем есть,
+  // транзакция упадёт на симуляции — поэтому режем суммы по факту.
+  const balXraw = await tokenBalanceRaw(pool.tokenX.address);
+  const balYraw = await tokenBalanceRaw(pool.tokenY.address);
+  const amountXuse = amountX > balXraw ? balXraw : amountX;
+  const amountYuse = amountY > balYraw ? balYraw : amountY;
+  if (amountXuse <= 0n || amountYuse <= 0n) {
+    throw new Error("на кошельке нет нужных токенов для входа (после докупки)");
+  }
+  if (amountXuse !== amountX || amountYuse !== amountY) {
+    journal("WARN", `суммы входа урезаны по балансу: X ${amountX}→${amountXuse}, Y ${amountY}→${amountYuse}`, {
+      position: args.positionId,
+      amountX: amountXuse.toString(),
+      amountY: amountYuse.toString(),
+    });
+  }
+
   const opId = opStart("OPEN", args.positionId, {
     pool: pool.address,
     capital,
@@ -491,14 +509,24 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
     const tx = await dlmm.initializePositionAndAddLiquidityByStrategy({
       positionPubKey: positionKp.publicKey,
       user: w.publicKey,
-      totalXAmount: new BN(amountX.toString()),
-      totalYAmount: new BN(amountY.toString()),
+      totalXAmount: new BN(amountXuse.toString()),
+      totalYAmount: new BN(amountYuse.toString()),
       strategy,
       slippage: env.live.slippagePct,
     });
 
     const sigs = await sendAll([tx], [positionKp], `OPEN pos#${args.positionId} ${pool.name}`);
     const signature = sigs[0] ?? "";
+
+    if (env.live.dryRun) {
+      // репетиция: позиции в цепочке НЕТ, поэтому не пишем фейковые адрес и подпись
+      opUpdate(opId, { status: "dry_run" });
+      journal("WARN", `pos#${args.positionId}: репетиция (dry-run) — позиция не отправлена, учёт только в демо-логике`, {
+        position: args.positionId,
+      });
+      return { signature: "dry-run", positionPubkey: "" };
+    }
+
     opUpdate(opId, { status: "confirmed", signature, positionPubkey: positionKp.publicKey.toBase58() });
     db.prepare(`UPDATE positions SET onchain_pubkey = ?, open_signature = ? WHERE id = ?`).run(
       positionKp.publicKey.toBase58(),
@@ -533,7 +561,9 @@ export async function closePosition(positionId: number, poolAddress: string, rea
   const row = db.prepare(`SELECT onchain_pubkey FROM positions WHERE id = ?`).get(positionId) as any;
   const pubkey = row?.onchain_pubkey;
   if (!pubkey) {
-    await alert(`pos#${positionId}: нет адреса позиции в цепочке — закрываю только в базе`, `no-pubkey-${positionId}`);
+    if (!env.live.dryRun) {
+      await alert(`pos#${positionId}: нет адреса позиции в цепочке — закрываю только в базе`, `no-pubkey-${positionId}`);
+    }
     return [];
   }
 

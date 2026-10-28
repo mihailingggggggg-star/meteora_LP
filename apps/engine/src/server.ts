@@ -454,6 +454,20 @@ export function startServer() {
         const body = await readBody(req);
         const mode = body?.mode === "live" ? "live" : "demo";
         const dryRun = body?.dryRun === true;
+        // Защита от «брошенных» позиций: если в live есть открытые позиции в цепочке,
+        // уходить в демо или в репетицию нельзя — движок перестанет ими управлять.
+        const openLive = Number(
+          (db.prepare(`SELECT COUNT(*) AS n FROM positions WHERE mode='live' AND status='open'`).get() as any).n,
+        );
+        if (openLive > 0 && (mode === "demo" || dryRun)) {
+          return json(res, 409, {
+            error:
+              `в live открыто ${openLive} поз. — сначала закройте их (Кабинет → позиция → Закрыть), ` +
+              `иначе они останутся в пуле без управления`,
+            openLive,
+          });
+        }
+
         const capitalUsd = Number(body?.capitalUsd ?? 0);
         const patch: Record<string, string> = {
           BOT_MODE: mode,

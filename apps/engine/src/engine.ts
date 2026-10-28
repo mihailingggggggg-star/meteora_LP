@@ -1204,6 +1204,20 @@ export class Engine {
         });
       } catch (err: any) {
         const msg = String(err?.message ?? err);
+        if (env.live.dryRun) {
+          // Репетиция: ничего не отправлялось, поэтому это не авария —
+          // откатываем запись и ждём следующего кандидата, торговлю не останавливаем.
+          journal("WARN", `pos#${id}: репетиция не прошла (${msg}) — откат, продолжаем`, {
+            position: id,
+            pool: plan.pool.name,
+            error: msg,
+          });
+          db.prepare(`DELETE FROM positions WHERE id = ?`).run(id);
+          this.positions = this.positions.filter((p) => p.id !== id);
+          this.cash += spend;
+          this.persist();
+          return;
+        }
         journal("ERROR", `pos#${id}: открытие в цепочке не удалось — ${msg}`, { position: id, pool: plan.pool.name, error: msg });
         this.halted = true;
         this.haltReason = `live open: ${msg}`;

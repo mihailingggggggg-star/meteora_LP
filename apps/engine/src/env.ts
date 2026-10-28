@@ -139,7 +139,7 @@ export const env = {
     slippagePct: num(process.env.LIVE_SLIPPAGE_PCT, 1.5),
     priorityFeeMicroLamports: num(process.env.LIVE_PRIORITY_FEE_MICROLAMPORTS, 50_000),
     /** сколько SOL держим на газ и аренду позиций — не тратим на ликвидность */
-    minSolReserve: num(process.env.LIVE_MIN_SOL_RESERVE, 0.03),
+    minSolReserve: num(process.env.LIVE_MIN_SOL_RESERVE, 0.1),
     /** как часто сверяем состояние кошелька с базой */
     reconcileMinutes: num(process.env.LIVE_RECONCILE_MINUTES, 10),
     /** расхождение капитала, при котором останавливаемся и зовём человека, % */
