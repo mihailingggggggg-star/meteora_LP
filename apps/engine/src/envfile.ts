@@ -24,9 +24,9 @@ export function updateEnvFile(patch: Record<string, string>): { file: string; ch
     }
   }
 
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, text, { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  // Пишем В САМ ФАЙЛ, без tmp+rename: systemd пускает на запись только сам .env
+  // (ReadWritePaths указывает на файл), а временный файл в каталоге — уже read-only.
+  fs.writeFileSync(file, text, { mode: 0o600 });
   try {
     fs.chmodSync(file, 0o600);
   } catch {
