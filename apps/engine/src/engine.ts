@@ -244,6 +244,7 @@ export class Engine {
     minFeeTvlPct: number;
     entryCostPct: number;
     tokenCooldownHours: number;
+    distribution: "spot" | "curve" | "uniform";
     healthCheckMinutes: number;
     filterBreachChecks: number;
     rangeAdjustMinPct: number;
@@ -283,6 +284,8 @@ export class Engine {
     minFeeTvlPct: env.strategy.minFeeTvlPct ?? 1.5,
     entryCostPct: env.strategy.entryCostPct ?? 0.3,
     tokenCooldownHours: env.strategy.tokenCooldownHours ?? 6,
+    // форма распределения по бинам: uniform = Meteora Spot (дефолт), spot у нас = колокол (Curve)
+    distribution: env.strategy.distribution,
     healthCheckMinutes: env.strategy.healthCheckMinutes ?? 5,
     filterBreachChecks: env.strategy.filterBreachChecks ?? 2,
     rangeAdjustMinPct: env.strategy.rangeAdjustMinPct ?? 20,
