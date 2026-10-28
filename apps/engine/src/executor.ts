@@ -321,18 +321,42 @@ async function sendAll(txs: Transaction[], extraSigners: Keypair[], label: strin
   });
 }
 
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+/**
+ * Баланс токена. Проверяем ОБА токен-программы: часть мемкоинов — Token-2022,
+ * и раньше такие монеты «не находились», из-за чего вход отменялся сразу после докупки.
+ */
 async function tokenBalanceRaw(mint: string): Promise<bigint> {
   const w = loadWallet();
   if (!w) return 0n;
-  const res = await withRpc((conn) =>
-    conn.getParsedTokenAccountsByOwner(w.publicKey, { mint: new PublicKey(mint) }),
-  );
+  const key = new PublicKey(mint);
   let sum = 0n;
-  for (const acc of res.value) {
-    const amt = (acc.account as any)?.data?.parsed?.info?.tokenAmount?.amount;
-    if (amt) sum += BigInt(amt);
+  for (const programId of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
+    try {
+      const res = await withRpc((conn) =>
+        conn.getParsedTokenAccountsByOwner(w.publicKey, { mint: key, programId: new PublicKey(programId) }),
+      );
+      for (const acc of res.value) {
+        const amt = (acc.account as any)?.data?.parsed?.info?.tokenAmount?.amount;
+        if (amt) sum += BigInt(amt);
+      }
+    } catch {
+      /* нет такого аккаунта в этой программе */
+    }
   }
   return sum;
+}
+
+/** Ждём, пока RPC увидит новый баланс после свопа (обычно 1–3 секунды). */
+async function waitForTokenBalance(mint: string, need: bigint, tries = 6): Promise<bigint> {
+  let have = await tokenBalanceRaw(mint);
+  for (let i = 0; i < tries && have < need; i++) {
+    await new Promise((r) => setTimeout(r, 800));
+    have = await tokenBalanceRaw(mint);
+  }
+  return have;
 }
 
 /**
@@ -361,13 +385,29 @@ async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPr
     lamports: lamports.toString(),
   });
 
-  const qres = await fetch(
+  const jfetch = async (url: string, init?: RequestInit, tries = 3): Promise<Response> => {
+    let last: Response | null = null;
+    for (let i = 0; i < tries; i++) {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      last = res;
+      // 429 — лимит публичного API: ждём и пробуем ещё
+      if (res.status === 429) {
+        await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+        continue;
+      }
+      return res;
+    }
+    return last as Response;
+  };
+
+  const qres = await jfetch(
     `${env.jupiterBase}/quote?inputMint=${env.wsolMint}&outputMint=${mint}&amount=${lamports.toString()}&slippageBps=${Math.round(env.live.slippagePct * 100)}`,
   );
-  if (!qres.ok) throw new Error(`jupiter: не удалось получить котировку (${qres.status})`);
+  if (!qres.ok) throw new Error(`jupiter: котировка недоступна (${qres.status}) — попробуем позже`);
   const quote = await qres.json();
 
-  const sres = await fetch(`${env.jupiterBase}/swap`, {
+  const sres = await jfetch(`${env.jupiterBase}/swap`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -377,7 +417,7 @@ async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPr
       dynamicComputeUnitLimit: true,
     }),
   });
-  if (!sres.ok) throw new Error(`jupiter: сборка swap не удалась (${sres.status})`);
+  if (!sres.ok) throw new Error(`jupiter: сборка swap не удалась (${sres.status}) — попробуем позже`);
   const { swapTransaction } = (await sres.json()) as { swapTransaction: string };
   const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
 
@@ -389,6 +429,8 @@ async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPr
   tx.sign([w]);
   const sig = await withRpc((conn) => conn.sendTransaction(tx, { maxRetries: 3 }));
   await withRpc((conn) => conn.confirmTransaction(sig, "confirmed"));
+  // даём RPC увидеть новый токен-аккаунт, иначе вход отменится «нет токенов»
+  await waitForTokenBalance(mint, needRaw);
   journal("LIVE", `докупка токена выполнена: ${sig} (+${quote.outAmount} raw)`, {
     mint,
     signature: sig,

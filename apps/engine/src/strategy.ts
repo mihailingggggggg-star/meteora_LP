@@ -182,7 +182,7 @@ export function buildBalancedPlan(opts: {
   // не забираем больше 20% ликвидности коридора — иначе сами двигаем цену при выходе
   const liquidityCap = rangeLiquidity > 0 ? rangeLiquidity * 0.2 : deposit;
   const capital = Math.max(0, Math.min(deposit * (settings.budgetPct / 100), riskCap, liquidityCap));
-  if (capital < (settings.minPositionUsd ?? 10)) return null;
+  if (capital < (settings.minPositionUsd ?? 1)) return null;
   if (rangeLiquidity > 0 && capital >= rangeLiquidity * 0.2 - 0.01) notes.push("капитал ограничен ликвидностью коридора");
 
   bins.forEach((b) => {
