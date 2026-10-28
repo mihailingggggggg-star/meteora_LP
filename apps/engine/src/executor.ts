@@ -281,11 +281,26 @@ function priorityIx() {
 async function sendAll(txs: Transaction[], extraSigners: Keypair[], label: string): Promise<string[]> {
   const w = loadWallet();
   if (!w) throw new Error("кошелёк не загружен");
+  // что уже отправлено в этом вызове — чтобы повтор на резервном RPC не отправил
+  // ту же транзакцию второй раз (двойное открытие/закрытие)
+  const sent = new Map<Transaction, string>();
+  const sigs: string[] = [];
   return withRpc(async (conn) => {
-    const sigs: string[] = [];
     for (const tx of txs) {
+      const already = sent.get(tx);
+      if (already) {
+        if (!sigs.includes(already)) sigs.push(already);
+        continue;
+      }
       tx.feePayer = tx.feePayer ?? w.publicKey;
-      tx.add(priorityIx());
+      // Идемпотентно: withRpc может повторить весь блок на резервном RPC, и тогда
+      // tx.add() вставлял вторую ComputeBudget-инструкцию → «Transaction contains a
+      // duplicate instruction». Ровно на этом упало повторное открытие после
+      // ребаланса: позицию закрыли, открыть не смогли.
+      const hasComputeBudget = tx.instructions.some((ix) =>
+        ix.programId.equals(ComputeBudgetProgram.programId),
+      );
+      if (!hasComputeBudget) tx.add(priorityIx());
 
       // Репетиция: сначала симулируем. Если цепь говорит «не пройдёт» —
       // не отправляем и не жжём комиссию, а поднимаем ошибку (движок остановится и позовёт человека).
@@ -321,6 +336,7 @@ async function sendAll(txs: Transaction[], extraSigners: Keypair[], label: strin
         commitment: "confirmed",
         maxRetries: 3,
       });
+      sent.set(tx, sig);
       sigs.push(sig);
       journal("LIVE", `${label}: подтверждено ${sig}`, { label, signature: sig });
     }

@@ -1341,6 +1341,25 @@ export class Engine {
     const guardMs = (cause === "RANGE_ADJUST" ? this.settings.rangeAdjustCooldownMin : 15) * 60_000;
     if (last && now - last < guardMs) return;
 
+    // Перестройка сетки — это реальные деньги: закрытие + повторный вход стоят
+    // ~(entryCost + friction)% от капитала. Мелкая позиция, которая ещё не
+    // отработала этот круг, при правке диапазона просто платит комиссии дважды.
+    if (cause === "RANGE_ADJUST") {
+      const earned = pos.feesAccrued + pos.feesClaimed;
+      const roundTrip = (pos.capital * (this.settings.entryCostPct + this.settings.frictionPct)) / 100;
+      if (earned < roundTrip && now - pos.openedAt < 6 * 3600_000) {
+        journal("HEALTH", `pos#${pos.id} ${pos.tokenSymbol}: правка диапазона отложена — заработано ${earned.toFixed(3)}, круг стоит ${roundTrip.toFixed(3)} (проверю позже)`, {
+          position: pos.id,
+          earned,
+          roundTrip,
+          cause,
+        });
+        pos.lastRangeAdjustAt = now;
+        pos.rangeNeedsAdjust = false;
+        return;
+      }
+    }
+
     const freshPool = await fetchPool(pos.pool.address).catch(() => null);
     if (!freshPool) {
       journal("WARN", `pos#${pos.id}: пул не отдал данные — перестройка сетки отложена`, { position: pos.id, cause });
