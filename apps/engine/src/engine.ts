@@ -1284,7 +1284,10 @@ export class Engine {
         const msg = String(err?.message ?? err);
         // «Недостаточно средств» и лимиты слотов — это не авария, а нормальное состояние
         // (вывели SOL, позиция уже занята). Такую попытку просто откатываем без HALT.
-        const soft = /недостаточно SOL|нет нужных токенов|лимит позиций|сумма позиции слишком мала|jupiter/i.test(msg);
+        const soft =
+          /недостаточно SOL|нет нужных токенов|лимит позиций|сумма позиции слишком мала|jupiter|insufficient funds|duplicate instruction|симуляция не прошла/i.test(
+            msg,
+          );
         if (env.live.dryRun || soft) {
           journal("WARN", `pos#${id}: вход не выполнен (${msg}) — откат, продолжаем`, {
             position: id,
@@ -1391,6 +1394,19 @@ export class Engine {
           position: pos.id,
           earned,
           roundTrip,
+          cause,
+        });
+        pos.lastRangeAdjustAt = now;
+        pos.rangeNeedsAdjust = false;
+        return;
+      }
+      // Не фиксируем минус ради смены сетки: закрытие «запирает» убыток,
+      // а цена часто отскакивает сразу после (так и вышло с LAUNCH 28.10).
+      const bodyPnl = pos.positionValue - pos.capital;
+      if (bodyPnl < -pos.capital * 0.005) {
+        journal("HEALTH", `pos#${pos.id} ${pos.tokenSymbol}: правка диапазона отложена — тело в минусе ${bodyPnl.toFixed(2)}, не фиксируем убыток ради смены сетки`, {
+          position: pos.id,
+          bodyPnl,
           cause,
         });
         pos.lastRangeAdjustAt = now;

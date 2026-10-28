@@ -742,28 +742,57 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
     maxK: args.maxK,
   });
 
-  const positionKp = Keypair.generate();
+  let positionKp = Keypair.generate();
+  let strategy: any = null;
+  let signature = "";
   try {
-    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(pool.address), { cluster: clusterOf() }));
-    const active = await dlmm.getActiveBin();
-    const activeBinId = Number(active.binId);
-    const strategy = {
-      minBinId: activeBinId + Math.round(args.minK),
-      maxBinId: activeBinId + Math.round(args.maxK),
-      strategyType: strategyType(),
-    };
-
-    const tx = await dlmm.initializePositionAndAddLiquidityByStrategy({
-      positionPubKey: positionKp.publicKey,
-      user: w.publicKey,
-      totalXAmount: new BN(amountXuse.toString()),
-      totalYAmount: new BN(amountYuse.toString()),
-      strategy,
-      slippage: env.live.slippagePct,
-    });
-
-    const sigs = await sendAll([tx], [positionKp], `OPEN pos#${args.positionId} ${pool.name}`);
-    const signature = sigs[0] ?? "";
+    // DLMM требует РОВНО заявленные суммы. Если цена сдвинулась между расчётом и
+    // отправкой, одной из сторон нужно больше — симуляция падает с «insufficient
+    // funds» (так мы не открыли позицию после ребаланса и пропустили рост).
+    // Поэтому 3 попытки с уменьшением суммы: недозалив безопаснее, чем не войти.
+    let openErr: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const factor = [0.98, 0.93, 0.88][attempt];
+      const tryX = BigInt(Math.floor(Number(amountXuse) * factor));
+      const tryY = BigInt(Math.floor(Number(amountYuse) * factor));
+      if (tryX <= 0n || tryY <= 0n) break;
+      positionKp = Keypair.generate();
+      try {
+        const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(pool.address), { cluster: clusterOf() }));
+        const active = await dlmm.getActiveBin();
+        const activeBinId = Number(active.binId);
+        strategy = {
+          minBinId: activeBinId + Math.round(args.minK),
+          maxBinId: activeBinId + Math.round(args.maxK),
+          strategyType: strategyType(),
+        };
+        const tx = await dlmm.initializePositionAndAddLiquidityByStrategy({
+          positionPubKey: positionKp.publicKey,
+          user: w.publicKey,
+          totalXAmount: new BN(tryX.toString()),
+          totalYAmount: new BN(tryY.toString()),
+          strategy,
+          slippage: env.live.slippagePct,
+        });
+        const label = `OPEN pos#${args.positionId} ${pool.name}${attempt ? " · попытка " + (attempt + 1) : ""}`;
+        const sigs = await sendAll([tx], [positionKp], label);
+        signature = sigs[0] ?? "";
+        openErr = null;
+        break;
+      } catch (err: any) {
+        openErr = err;
+        const msg = String(err?.message ?? err);
+        const retryable = /insufficient funds|Custom\"?:1|simulation failed|duplicate instruction/i.test(msg);
+        if (!retryable) throw err;
+        journal(
+          "WARN",
+          `pos#${args.positionId}: открытие не прошло (${msg.slice(0, 140)}) — пробую с меньшей суммой`,
+          { position: args.positionId, attempt: attempt + 1, factor },
+        );
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    if (openErr) throw openErr;
 
     if (env.live.dryRun) {
       // репетиция: позиции в цепочке НЕТ, поэтому не пишем фейковые адрес и подпись
