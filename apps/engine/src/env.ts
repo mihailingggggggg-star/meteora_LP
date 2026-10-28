@@ -127,6 +127,8 @@ export const env = {
   // и валидный ключ кошелька. Пока условия не выполнены — работает демо-симуляция.
   live: {
     enabled: bool(process.env.LIVE_EXECUTION, false),
+    /** прогон без отправки: транзакция симулируется и логируется (репетиция на mainnet) */
+    dryRun: bool(process.env.LIVE_DRY_RUN, false),
     secret: (process.env.TRADING_WALLET_SECRET_BASE58 || "").trim(),
     pubkey: (process.env.TRADING_WALLET_PUBKEY || "").trim(),
     encryptionKey: (process.env.WALLET_ENCRYPTION_KEY || "").trim(),

@@ -5,6 +5,7 @@ import {
   Keypair,
   PublicKey,
   Transaction,
+  VersionedTransaction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import DLMM from "@meteora-ag/dlmm";
@@ -186,6 +187,11 @@ async function withRpc<T>(fn: (conn: Connection) => Promise<T>): Promise<T> {
   }
 }
 
+/** Кластер берём из RPC: devnet-адрес → devnet, иначе mainnet-beta. */
+function clusterOf(): "mainnet-beta" | "devnet" {
+  return env.rpcUrl.includes("devnet") ? "devnet" : "mainnet-beta";
+}
+
 function priorityIx() {
   return ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.round(env.live.priorityFeeMicroLamports) });
 }
@@ -199,6 +205,30 @@ async function sendAll(txs: Transaction[], extraSigners: Keypair[], label: strin
     for (const tx of txs) {
       tx.feePayer = tx.feePayer ?? w.publicKey;
       tx.add(priorityIx());
+
+      // Репетиция: сначала симулируем. Если цепь говорит «не пройдёт» —
+      // не отправляем и не жжём комиссию, а поднимаем ошибку (движок остановится и позовёт человека).
+      try {
+        const sim = await conn.simulateTransaction(tx, [w, ...extraSigners]);
+        if (sim.value.err) {
+          const logs = (sim.value.logs ?? []).slice(-4).join(" | ");
+          throw new Error(`симуляция не прошла: ${JSON.stringify(sim.value.err)} · ${logs}`);
+        }
+        journal("LIVE", `${label}: симуляция ok (units ${sim.value.unitsConsumed ?? "?"})`, {
+          label,
+          units: sim.value.unitsConsumed ?? null,
+        });
+      } catch (err: any) {
+        if (String(err?.message ?? err).startsWith("симуляция не прошла")) throw err;
+        journal("WARN", `${label}: симуляцию выполнить не удалось (${err?.message ?? err}) — отправляем дальше`, { label });
+      }
+
+      if (env.live.dryRun) {
+        journal("LIVE", `${label}: DRY-RUN — транзакция не отправлена (LIVE_DRY_RUN=true)`, { label, dryRun: true });
+        sigs.push("dry-run");
+        continue;
+      }
+
       const sig = await sendAndConfirmTransaction(conn, tx, [w, ...extraSigners], {
         commitment: "confirmed",
         maxRetries: 3,
@@ -207,6 +237,82 @@ async function sendAll(txs: Transaction[], extraSigners: Keypair[], label: strin
       journal("LIVE", `${label}: подтверждено ${sig}`, { label, signature: sig });
     }
     return sigs;
+  });
+}
+
+async function tokenBalanceRaw(mint: string): Promise<bigint> {
+  const w = loadWallet();
+  if (!w) return 0n;
+  const res = await withRpc((conn) =>
+    conn.getParsedTokenAccountsByOwner(w.publicKey, { mint: new PublicKey(mint) }),
+  );
+  let sum = 0n;
+  for (const acc of res.value) {
+    const amt = (acc.account as any)?.data?.parsed?.info?.tokenAmount?.amount;
+    if (amt) sum += BigInt(amt);
+  }
+  return sum;
+}
+
+/**
+ * Докупка токеновой половины через Jupiter.
+ *
+ * Зачем: симметричная позиция 50/50 требует ОБА токена. На кошельке бота лежит SOL —
+ * без этого шага первая же попытка открыть позицию падала бы по «insufficient funds»
+ * (и мы бы «жгли» комиссию на неудачной транзакции).
+ */
+async function ensureToken(mint: string, needRaw: bigint, usdNeed: number, solPriceUsd: number): Promise<void> {
+  const w = loadWallet();
+  if (!w) throw new Error("кошелёк не загружен");
+  if (needRaw <= 0n) return;
+
+  const have = await tokenBalanceRaw(mint);
+  if (have >= needRaw) return;
+  const shortRaw = needRaw - have;
+  // сумма в SOL с запасом 2 % на проскальзывание и округление
+  const lamports = BigInt(Math.ceil((usdNeed * (Number(shortRaw) / Number(needRaw))) / Math.max(1e-9, solPriceUsd) * 1e9 * 1.02));
+  if (lamports <= 0n) return;
+
+  journal("LIVE", `докупка токена под 50/50: не хватает ${shortRaw.toString()} (≈${(Number(lamports) / 1e9).toFixed(4)} SOL)`, {
+    mint,
+    need: needRaw.toString(),
+    have: have.toString(),
+    lamports: lamports.toString(),
+  });
+
+  const qres = await fetch(
+    `${env.jupiterBase}/quote?inputMint=${env.wsolMint}&outputMint=${mint}&amount=${lamports.toString()}&slippageBps=${Math.round(env.live.slippagePct * 100)}`,
+  );
+  if (!qres.ok) throw new Error(`jupiter: не удалось получить котировку (${qres.status})`);
+  const quote = await qres.json();
+
+  const sres = await fetch(`${env.jupiterBase}/swap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      quoteResponse: quote,
+      userPublicKey: w.publicKey.toBase58(),
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+    }),
+  });
+  if (!sres.ok) throw new Error(`jupiter: сборка swap не удалась (${sres.status})`);
+  const { swapTransaction } = (await sres.json()) as { swapTransaction: string };
+  const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
+
+  if (env.live.dryRun) {
+    journal("LIVE", "докупка токена: DRY-RUN, транзакция не отправлена", { mint, lamports: lamports.toString() });
+    return;
+  }
+
+  tx.sign([w]);
+  const sig = await withRpc((conn) => conn.sendTransaction(tx, { maxRetries: 3 }));
+  await withRpc((conn) => conn.confirmTransaction(sig, "confirmed"));
+  journal("LIVE", `докупка токена выполнена: ${sig} (+${quote.outAmount} raw)`, {
+    mint,
+    signature: sig,
+    outAmount: String(quote.outAmount),
+    lamports: lamports.toString(),
   });
 }
 
@@ -259,10 +365,11 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
 
   const lamports = await solBalance();
   const reserve = env.live.minSolReserve * 1e9;
-  const needLamports = (capital / 2 / Math.max(1e-9, args.solPriceUsd)) * 1e9;
+  // нужен ВЕСЬ капитал в SOL: половина останется в SOL, вторая половина будет обменяна в токен
+  const needLamports = (capital / Math.max(1e-9, args.solPriceUsd)) * 1e9;
   if (lamports < reserve + needLamports) {
     throw new Error(
-      `недостаточно SOL: есть ${(lamports / 1e9).toFixed(4)}, нужно ${((reserve + needLamports) / 1e9).toFixed(4)} (резерв газа ${env.live.minSolReserve})`,
+      `недостаточно SOL: есть ${(lamports / 1e9).toFixed(4)}, нужно ${((reserve + needLamports) / 1e9).toFixed(4)} (позиция + резерв газа ${env.live.minSolReserve})`,
     );
   }
 
@@ -277,6 +384,12 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
   const amountY = BigInt(Math.floor((usdY / py) * 10 ** pool.tokenY.decimals));
   if (amountX <= 0n || amountY <= 0n) throw new Error("сумма позиции слишком мала для этого пула");
 
+  // токеновая половина: если её нет на кошельке — покупаем через Jupiter
+  const xIsWsol = pool.tokenX.address === env.wsolMint;
+  const tokenMint = xIsWsol ? pool.tokenY.address : pool.tokenX.address;
+  const tokenNeed = xIsWsol ? amountY : amountX;
+  await ensureToken(tokenMint, tokenNeed, capital / 2, args.solPriceUsd);
+
   const opId = opStart("OPEN", args.positionId, {
     pool: pool.address,
     capital,
@@ -286,7 +399,7 @@ export async function openPosition(args: OpenArgs): Promise<{ signature: string;
 
   const positionKp = Keypair.generate();
   try {
-    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(pool.address), { cluster: "mainnet-beta" }));
+    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(pool.address), { cluster: clusterOf() }));
     const active = await dlmm.getActiveBin();
     const activeBinId = Number(active.binId);
     const strategy = {
@@ -346,7 +459,7 @@ export async function closePosition(positionId: number, poolAddress: string, rea
 
   const opId = opStart("CLOSE", positionId, { pool: poolAddress, capital: 0 });
   try {
-    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(poolAddress), { cluster: "mainnet-beta" }));
+    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(poolAddress), { cluster: clusterOf() }));
     const { userPositions } = await dlmm.getPositionsByUserAndLbPair(w.publicKey);
     const found = userPositions.find((p: any) => p.publicKey.toBase58() === pubkey);
     const binIds: number[] = ((found as any)?.positionData?.positionBinData ?? []).map((b: any) => Number(b.binId));
@@ -386,7 +499,7 @@ export async function claimFees(positionId: number, poolAddress: string): Promis
 
   const opId = opStart("CLAIM", positionId, { pool: poolAddress, capital: 0 });
   try {
-    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(poolAddress), { cluster: "mainnet-beta" }));
+    const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(poolAddress), { cluster: clusterOf() }));
     const { userPositions } = await dlmm.getPositionsByUserAndLbPair(w.publicKey);
     const found = userPositions.find((p: any) => p.publicKey.toBase58() === pubkey);
     if (!found) {
@@ -423,6 +536,7 @@ export async function reconcile(): Promise<ReconcileResult> {
   const notes: string[] = [];
   const empty: ReconcileResult = { ok: true, sol: 0, chainPositions: 0, dbOpen: 0, missing: [], extra: [], notes };
   if (!loadWallet()) return { ...empty, ok: false, notes: [walletError ?? "кошелёк не загружен"] };
+  if (env.live.dryRun) return { ...empty, notes: ["dry-run: сверка с цепочкой отключена"] };
 
   const rows = db
     .prepare(`SELECT id, pool, onchain_pubkey FROM positions WHERE mode='live' AND status='open'`)
@@ -442,7 +556,7 @@ export async function reconcile(): Promise<ReconcileResult> {
 
   for (const [poolAddress, list] of byPool) {
     try {
-      const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(poolAddress), { cluster: "mainnet-beta" }));
+      const dlmm = await withRpc((conn) => DLMM.create(conn, new PublicKey(poolAddress), { cluster: clusterOf() }));
       const { userPositions } = await dlmm.getPositionsByUserAndLbPair(loadWallet()!.publicKey);
       chainPositions += userPositions.length;
       const onChain = new Set(userPositions.map((p: any) => p.publicKey.toBase58()));
@@ -480,6 +594,7 @@ export function status() {
   return {
     mode: env.mode,
     enabled: env.live.enabled,
+    dryRun: env.live.dryRun,
     armed: armed(),
     wallet: walletAddress(),
     walletError,

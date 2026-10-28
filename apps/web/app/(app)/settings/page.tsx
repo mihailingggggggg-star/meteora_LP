@@ -591,7 +591,7 @@ export default function SettingsPage() {
                 <ShieldAlert className={`h-4 w-4 ${live?.armed ? "text-mint" : "text-dim"}`} />
                 <div className="text-[13px] font-medium">Боевой режим</div>
                 <Chip tone={live?.armed ? "mint" : "accent"} className="ml-auto">
-                  {live?.armed ? "транзакции включены" : "демо / симуляция"}
+                  {live?.armed ? (live?.dryRun ? "репетиция (dry-run)" : "транзакции включены") : "демо / симуляция"}
                 </Chip>
               </div>
 
