@@ -167,6 +167,7 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   entryCostPct: { min: 0, max: 3 },
   tokenCooldownHours: { min: 0, max: 72 },
   hardStopPct: { min: 0, max: 50 },
+  minPositionUsd: { min: 1, max: 500 },
   healthCheckMinutes: { min: 1, max: 120 },
   filterBreachChecks: { min: 1, max: 10, int: true },
   rangeAdjustMinPct: { min: 5, max: 200 },
@@ -246,6 +247,7 @@ export class Engine {
     entryCostPct: number;
     tokenCooldownHours: number;
     hardStopPct: number;
+    minPositionUsd: number;
     distribution: "spot" | "curve" | "uniform";
     healthCheckMinutes: number;
     filterBreachChecks: number;
@@ -287,6 +289,7 @@ export class Engine {
     entryCostPct: env.strategy.entryCostPct ?? 0.3,
     tokenCooldownHours: env.strategy.tokenCooldownHours ?? 6,
     hardStopPct: env.strategy.hardStopPct ?? 8,
+    minPositionUsd: env.strategy.minPositionUsd ?? 3,
     // форма распределения по бинам: uniform = Meteora Spot (дефолт), spot у нас = колокол (Curve)
     distribution: env.strategy.distribution,
     healthCheckMinutes: env.strategy.healthCheckMinutes ?? 5,
@@ -1072,7 +1075,7 @@ export class Engine {
     // при нескольких слотах делим капитал поровну, а не 50% депозита на каждый
     const perSlot = this.deposit / Math.max(1, this.slots);
     const spend = Math.min(plan.capital, this.cash, perSlot);
-    if (spend < 10) return;
+    if (spend < (this.settings.minPositionUsd ?? 3)) return;
     // Издержки входа. Симметричный диапазон требует ОБЕ стороны, то есть половину
     // суммы надо обменять в токен: Jupiter-своп + слиппедж (0.2–0.4 %). Раньше это
     // было ноль — при 52 входах набегало ~$25 «невидимых» потерь.

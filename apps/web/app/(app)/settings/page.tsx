@@ -493,6 +493,16 @@ export default function SettingsPage() {
 
                 <Section icon={<ShieldAlert className="h-3.5 w-3.5" />} title="Фаза 5 · защита капитала">
                   <Field
+                    label="Минимальный размер позиции"
+                    hint="ниже этой суммы вход не открывается (для тестов можно опустить)"
+                    value={form.minPositionUsd ?? 3}
+                    min={1}
+                    max={100}
+                    step={1}
+                    suffix="$"
+                    onChange={(v) => set({ minPositionUsd: v })}
+                  />
+                  <Field
                     label="Жёсткий стоп по цене"
                     hint="на сколько % ниже нижней границы диапазона терпим; 0 — выключен"
                     value={form.hardStopPct ?? 8}
@@ -784,9 +794,10 @@ export default function SettingsPage() {
                     const loss = state?.settings?.maxLossPerTradePct ?? 3;
                     const rng = state?.settings?.maxRangePct ?? 25;
                     const size = (dep * loss) / 100 / (rng / 100 + 0.0025);
+                    const minPos = state?.settings?.minPositionUsd ?? 3;
                     return (
-                      <span className={`num ${size < 10 ? "text-danger" : "text-ink"}`}>
-                        ≈ {usd(size)} {size < 10 ? "· меньше минимума $10" : ""}
+                      <span className={`num ${size < minPos ? "text-danger" : "text-ink"}`}>
+                        ≈ {usd(size)} {size < minPos ? `· меньше минимума ${usd(minPos)}` : ""}
                       </span>
                     );
                   })()}

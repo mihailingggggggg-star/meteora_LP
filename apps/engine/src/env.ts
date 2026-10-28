@@ -72,6 +72,8 @@ export const env = {
     tokenCooldownHours: num(process.env.TOKEN_COOLDOWN_HOURS, 6),
     /** жёсткий стоп: на сколько % ниже нижней границы диапазона терпим, прежде чем выйти */
     hardStopPct: num(process.env.HARD_STOP_PCT, 8),
+    /** минимальный размер позиции, $ (для тестов можно опустить) */
+    minPositionUsd: num(process.env.MIN_POSITION_USD, 3),
     frictionPct: num(process.env.FRICTION_PCT, 0.15), // издержки свопа при ребалансе
     maxLossPerTradePct: num(process.env.MAX_LOSS_PER_TRADE_PCT, 3.0),
     maxDailyLossPct: num(process.env.MAX_DAILY_LOSS_PCT, 5.0),
