@@ -433,6 +433,22 @@ export function startServer() {
         return json(res, 200, { ok: true, status: live.status() });
       }
 
+      // ── Telegram-алерты из интерфейса
+      if (p === "/api/live/alerts" && req.method === "POST") {
+        const body = await readBody(req);
+        const token = String(body?.token ?? "").trim();
+        const chatId = String(body?.chatId ?? "").trim();
+        if (!token || !chatId) return json(res, 400, { error: "нужны token и chatId" });
+        // проверяем пару через Telegram, чтобы не сохранить мусор
+        const check = await fetch(`https://api.telegram.org/bot${token}/getMe`).catch(() => null);
+        if (!check || !check.ok) return json(res, 400, { error: "Telegram не принял токен бота" });
+        updateEnvFile({ TG_BOT_TOKEN: token, TG_CHAT_ID: chatId });
+        journal("WARN", "алерты Telegram настроены из интерфейса → перезапуск движка", { chatId });
+        json(res, 200, { ok: true, restarting: true });
+        setTimeout(() => process.exit(0), 400);
+        return;
+      }
+
       // ── переключение демо / live (и режим репетиции) из интерфейса
       if (p === "/api/live/mode" && req.method === "POST") {
         const body = await readBody(req);

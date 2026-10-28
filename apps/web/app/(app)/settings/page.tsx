@@ -73,6 +73,9 @@ export default function SettingsPage() {
   const [confirmLive, setConfirmLive] = useState(false);
   const [dryRunChoice, setDryRunChoice] = useState(true);
   const [capitalInput, setCapitalInput] = useState<number>(0);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [tgToken, setTgToken] = useState("");
+  const [tgChat, setTgChat] = useState("");
   const [saving, setSaving] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [journalDay, setJournalDay] = useState<string>("");
@@ -207,6 +210,28 @@ export default function SettingsPage() {
     } finally {
       setBusy(false);
       setConfirmLive(false);
+    }
+  };
+
+  const saveAlerts = async () => {
+    if (!tgToken.trim() || !tgChat.trim()) {
+      toast.error("Заполните токен бота и chat id");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await enginePost<any>("/live/alerts", { token: tgToken.trim(), chatId: tgChat.trim() }).catch(() => null);
+      if (r?.ok) {
+        toast.success("Алерты настроены — движок перезапускается");
+        setAlertsOpen(false);
+        setTgToken("");
+        setTgChat("");
+        setTimeout(() => void refreshLive(), 6000);
+      } else {
+        toast.error(r?.error ?? "Не удалось сохранить алерты");
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -696,8 +721,13 @@ export default function SettingsPage() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted">Алерты в Telegram</span>
-                  <span className={live?.alertsEnabled ? "text-mint" : "text-dim"}>
-                    {live?.alertsEnabled ? "включены" : "не настроены"}
+                  <span className="flex items-center gap-1.5">
+                    <span className={live?.alertsEnabled ? "text-mint" : "text-dim"}>
+                      {live?.alertsEnabled ? "включены" : "не настроены"}
+                    </span>
+                    <button onClick={() => setAlertsOpen(true)} className="rounded-full border border-white/10 px-2 py-[2px] text-[10px] text-muted hover:text-ink">
+                      настроить
+                    </button>
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -954,6 +984,41 @@ export default function SettingsPage() {
               <Button variant="mint" size="sm" className="flex-1" onClick={saveWallet} disabled={busy || !secretInput.trim()}>
                 {busy ? "Сохраняю…" : "Подключить"}
               </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {alertsOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setAlertsOpen(false)}>
+          <div className="w-full max-w-[480px] rounded-2xl border border-white/10 bg-[#171310] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="text-[15px] font-semibold">Алерты в Telegram</div>
+            <div className="mt-1 text-[11.5px] leading-relaxed text-muted">
+              Бот будет писать об открытии/закрытии позиций, ошибках транзакций, срабатывании стопов и расхождении с цепочкой.
+            </div>
+            <div className="mt-3 space-y-2">
+              <input
+                value={tgToken}
+                onChange={(e) => setTgToken(e.target.value)}
+                placeholder="токен бота (123456:AA…)"
+                spellCheck={false}
+                className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 font-mono text-[11.5px] text-ink focus:border-accent/50 focus:outline-none"
+              />
+              <input
+                value={tgChat}
+                onChange={(e) => setTgChat(e.target.value)}
+                placeholder="chat id (например 532597674)"
+                spellCheck={false}
+                className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 font-mono text-[11.5px] text-ink focus:border-accent/50 focus:outline-none"
+              />
+              <div className="text-[10.5px] text-dim">
+                chat id: напишите своему боту любое сообщение и откройте api.telegram.org/bot&lt;токен&gt;/getUpdates — там будет
+                `message.chat.id`.
+              </div>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <Button variant="ghost" size="sm" className="flex-1" onClick={() => setAlertsOpen(false)}>Отмена</Button>
+              <Button variant="mint" size="sm" className="flex-1" onClick={saveAlerts} disabled={busy}>Сохранить</Button>
             </div>
           </div>
         </div>
