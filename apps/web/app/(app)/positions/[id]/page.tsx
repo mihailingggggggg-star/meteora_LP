@@ -808,6 +808,9 @@ export default function PositionDetail() {
               </Chip>
               <Chip tone="neutral">#{detail.id}</Chip>
               <Chip tone="neutral">сетка ±{pctPlain(view.rangePct * 100, 2)}</Chip>
+              {isOpen && live?.chainBinsCount && live.chainBinsCount !== live.binsCount ? (
+                <Chip tone="accent">в цепочке {live.chainBinsCount} бинов</Chip>
+              ) : null}
               {isOpen && live ? (
                 live.source === "chain" ? (
                   <Chip tone="mint">цепочка · {live.chainAgeSec ?? 0} с</Chip>

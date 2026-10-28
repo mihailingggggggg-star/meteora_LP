@@ -1328,9 +1328,85 @@ export class Engine {
    * cause: RANGE_BREAK — цена вышла за границу и не вернулась;
    *        RANGE_ADJUST — ATR ушёл, и сетка перестала соответствовать волатильности.
    */
+  /**
+   * РЕАЛЬНАЯ перестройка сетки в live: закрыть позицию в цепочке и открыть новую.
+   *
+   * Модельный ребаланс (пересчёт бинов в памяти) в бою — это ложь: в DLMM остаётся
+   * старая сетка, а движок считает выходы и комиссии по новой. Поэтому в live
+   * единственный способ поменять сетку — реальные транзакции.
+   */
+  private async liveRebalance(pos: RtPos, cause: "RANGE_BREAK" | "RANGE_ADJUST", price: number) {
+    const now = Date.now();
+    const last = cause === "RANGE_ADJUST" ? pos.lastRangeAdjustAt : pos.lastRebalanceAt;
+    const guardMs = (cause === "RANGE_ADJUST" ? this.settings.rangeAdjustCooldownMin : 15) * 60_000;
+    if (last && now - last < guardMs) return;
+
+    const freshPool = await fetchPool(pos.pool.address).catch(() => null);
+    if (!freshPool) {
+      journal("WARN", `pos#${pos.id}: пул не отдал данные — перестройка сетки отложена`, { position: pos.id, cause });
+      return;
+    }
+
+    const st = this.settings;
+    const candles = this.alignCandles(await this.getCandles(pos.pool.address, "30m"), freshPool.currentPrice);
+    const atr = candles.length >= 16 ? computeAtr(candles, 14) : 0;
+    let plan: ReturnType<typeof buildBalancedPlan> = null;
+    try {
+      const binData = await readBinLiquidity(freshPool, 0.08);
+      plan = buildBalancedPlan({ pool: freshPool, candles30m: candles, binData, deposit: this.deposit, settings: st });
+    } catch (err: any) {
+      journal("WARN", `pos#${pos.id}: новую сетку построить не удалось — ${err?.message ?? err}`, { position: pos.id });
+    }
+
+    if (!plan || !atr) {
+      journal("WARN", `pos#${pos.id} ${pos.tokenSymbol}: пул больше не проходит фильтры — закрываю вместо перестройки`, {
+        position: pos.id,
+        cause,
+      });
+      await this.closePositionById(pos.id, "EXIT_FILTERS", price);
+      return;
+    }
+
+    const oldRange = pos.rangePct;
+    const oldAtr = pos.entryAtrPct;
+    journal("REBALANCE", `pos#${pos.id} ${pos.tokenSymbol}: перестройка сетки в цепочке (${cause}) — закрываю и открываю заново: диапазон ±${(oldRange * 100).toFixed(1)}% → ±${(plan.rangePct * 100).toFixed(1)}%, ATR ${oldAtr.toFixed(2)}% → ${plan.atrPct.toFixed(2)}%, бинов ${plan.bins.length}`, {
+      position: pos.id,
+      cause,
+      rangeFrom: oldRange,
+      rangeTo: plan.rangePct,
+      atrFrom: oldAtr,
+      atrTo: plan.atrPct,
+      bins: plan.bins.length,
+    });
+
+    const id = pos.id;
+    const rebalances = pos.rebalances;
+    const rangeAdjusts = pos.rangeAdjusts;
+    const consecutiveLosses = pos.consecutiveLosses;
+    await this.closePositionById(id, "REBALANCE", price);
+    if (this.halted || !this.running) return;
+    if (this.positions.length >= this.slots) return;
+    await this.openPosition(plan);
+    // счётчики прежней позиции переносим на новую, иначе теряется серия убытков
+    const np = this.positions.find((p) => p.pool.address === plan!.pool.address) ?? null;
+    if (np) {
+      np.rebalances = rebalances + 1;
+      np.rangeAdjusts = rangeAdjusts + (cause === "RANGE_ADJUST" ? 1 : 0);
+      np.consecutiveLosses = consecutiveLosses;
+      np.feesAtRebalance = np.feesAccrued + np.feesClaimed;
+      this.persist();
+    }
+  }
   private async rebalance(pos: RtPos, price: number, cause: "RANGE_BREAK" | "RANGE_ADJUST" = "RANGE_BREAK") {
     const now = Date.now();
     const rel = price / pos.entryPrice;
+    // В live сетку нельзя «перестроить в модели»: в цепочке останется старая сетка,
+    // и движок начнёт считать выходы и комиссии по несуществующей. Только реальные
+    // транзакции: закрыть позицию и открыть новую сетку под свежий ATR.
+    if (this.mode === "live" && live.armed()) {
+      await this.liveRebalance(pos, cause, price);
+      return;
+    }
 
     // ── 1. свежие данные пула (не «на память» с момента входа)
     const freshPool = await fetchPool(pos.pool.address).catch(() => null);
@@ -1847,6 +1923,14 @@ export class Engine {
       pos.chainLowerBin = cp.lowerBinId;
       pos.chainUpperBin = cp.upperBinId;
       pos.chainInRange = cp.activeBinId >= cp.lowerBinId && cp.activeBinId <= cp.upperBinId;
+      // ── диапазон СЕТКИ берём из цепочки: половина ширины в бинах × шаг бина.
+      // Раньше здесь оставалось значение модели, и после «правки диапазона» (которая
+      // двигала только модель) карточка показывала ±18%, а в DLMM висело ±25%.
+      const step = (pool.binStep || 0) / 10_000;
+      const halfBins = (cp.upperBinId - cp.lowerBinId) / 2;
+      if (step > 0 && halfBins > 0) {
+        pos.rangePct = halfBins * step;
+      }
       pos.positionValue = x * px + y * py;
       pos.solUsd = xIsSol ? x * px : y * py;
       pos.tokenUsd = xIsSol ? y * py : x * px;
@@ -2823,6 +2907,9 @@ export class Engine {
           : null,
       chainInRange: p.chainInRange ?? null,
       chainClaimedUsd: p.chainClaimedUsd ?? null,
+      // сколько бинов реально в цепочке — для сверки с моделью в карточке
+      chainBinsCount:
+        p.chainLowerBin != null && p.chainUpperBin != null ? p.chainUpperBin - p.chainLowerBin + 1 : null,
       chainError: p.chainError ?? null,
     };
   }
