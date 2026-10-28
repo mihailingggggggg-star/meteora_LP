@@ -159,6 +159,13 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   claimThresholdPct: { min: 0, max: 100 },
   scanIntervalSeconds: { min: 15, max: 3600 },
   atrExitTolerancePct: { min: 0, max: 200 },
+  rangeHorizonHours: { min: 0.5, max: 48 },
+  maxBinStepBps: { min: 5, max: 400, int: true },
+  minBinsPerSide: { min: 3, max: 30, int: true },
+  maxBinsPerSide: { min: 10, max: 70, int: true },
+  minFeeTvlPct: { min: 0, max: 50 },
+  entryCostPct: { min: 0, max: 3 },
+  tokenCooldownHours: { min: 0, max: 72 },
   healthCheckMinutes: { min: 1, max: 120 },
   filterBreachChecks: { min: 1, max: 10, int: true },
   rangeAdjustMinPct: { min: 5, max: 200 },
@@ -207,8 +214,11 @@ export class Engine {
   blockedPools = new Map<string, number>();
   /** когда выходили из пула — обратно не входим 60 минут (защита от «пилы» CARDS↔CARDS) */
   recentlyClosed = new Map<string, number>();
-  /** отметки времени ротаций — не больше 3 в час */
+  /** отметки времени ротаций — не больше 1 в час (churn был главной утечкой) */
   rotationMarks: number[] = [];
+  /** выходы из диапазона по токену: 3 за 6 часов → пауза на токен */
+  oorEvents = new Map<string, number[]>();
+  tokenCooldowns = new Map<string, number>();
 
   settings: StrategySettings & {
     minVol1h: number;
@@ -227,6 +237,13 @@ export class Engine {
     rangeBreakMinutes: number;
     maxTurnover: number;
     atrExitTolerancePct: number;
+    maxBinStepBps: number;
+    rangeHorizonHours: number;
+    minBinsPerSide: number;
+    maxBinsPerSide: number;
+    minFeeTvlPct: number;
+    entryCostPct: number;
+    tokenCooldownHours: number;
     healthCheckMinutes: number;
     filterBreachChecks: number;
     rangeAdjustMinPct: number;
@@ -259,6 +276,13 @@ export class Engine {
     rangeBreakMinutes: env.strategy.rangeBreakMinutes ?? 10,
     maxTurnover: env.strategy.maxTurnover ?? 40,
     atrExitTolerancePct: env.strategy.atrExitTolerancePct ?? 20,
+    maxBinStepBps: env.strategy.maxBinStepBps ?? 150,
+    rangeHorizonHours: env.strategy.rangeHorizonHours ?? 4,
+    minBinsPerSide: env.strategy.minBinsPerSide ?? 9,
+    maxBinsPerSide: env.strategy.maxBinsPerSide ?? 35,
+    minFeeTvlPct: env.strategy.minFeeTvlPct ?? 1.5,
+    entryCostPct: env.strategy.entryCostPct ?? 0.3,
+    tokenCooldownHours: env.strategy.tokenCooldownHours ?? 6,
     healthCheckMinutes: env.strategy.healthCheckMinutes ?? 5,
     filterBreachChecks: env.strategy.filterBreachChecks ?? 2,
     rangeAdjustMinPct: env.strategy.rangeAdjustMinPct ?? 20,
@@ -338,6 +362,14 @@ export class Engine {
         filterBreachChecks: this.settings.filterBreachChecks,
       },
       rangeDynamics: {
+        feeTvlMinPct: this.settings.minFeeTvlPct,
+        rangeHorizonHours: this.settings.rangeHorizonHours,
+        minBinsPerSide: this.settings.minBinsPerSide,
+        maxBinsPerSide: this.settings.maxBinsPerSide,
+        maxBinStepBps: this.settings.maxBinStepBps,
+        entryCostPct: this.settings.entryCostPct,
+        tokenCooldownHours: this.settings.tokenCooldownHours,
+        distribution: this.settings.distribution,
         healthCheckMinutes: this.settings.healthCheckMinutes,
         rangeAtrMult: this.settings.rangeAtrMult,
         maxRangePct: this.settings.maxRangePct,
@@ -710,7 +742,10 @@ export class Engine {
       const pools = await this.getPools();
       const st = this.settings;
       const now = Date.now();
-      const funnel = { sol: 0, black: 0, tvl: 0, freeze: 0, holders: 0, turnover: 0, age: 0, atr: 0, flow: 0, blocked: 0 };
+      const funnel = {
+        sol: 0, black: 0, tvl: 0, freeze: 0, holders: 0, turnover: 0, age: 0, atr: 0, flow: 0, blocked: 0,
+        feeTvl: 0, binStep: 0,
+      };
 
       const passed = pools.filter((p) => {
         if (!isSolPair(p)) return (funnel.sol++, false);
@@ -725,6 +760,15 @@ export class Engine {
         const turnover = p.tvl > 0 ? p.vol24 / p.tvl : 0;
         if (turnover < st.minTurnover) return (funnel.turnover++, false);
         if (turnover > 60) return (funnel.turnover++, false);
+        // ГЛАВНЫЙ фильтр доходности: сколько комиссий приносит доллар TVL за сутки.
+        // Объём сам по себе ничего не значит: при base fee 0.1 % и обороте 5xTVL
+        // доходность 0.5 %/сут, чего не хватает даже на окупаемость одного ребаланса.
+        const feeTvlPct = p.feeTvl24h > 0 ? p.feeTvl24h : p.tvl > 0 ? (p.fees24 / p.tvl) * 100 : 0;
+        if (feeTvlPct < st.minFeeTvlPct) return (funnel.feeTvl++, false);
+        // шаг бина: при слишком крупном шаге целевой диапазон даёт < 9 бинов на сторону
+        if (p.binStep > st.maxBinStepBps) return (funnel.binStep++, false);
+        // пауза на токен после серии выходов из диапазона
+        if ((this.tokenCooldowns.get(pairInfo.token.address) ?? 0) > now) return (funnel.blocked++, false);
         if (p.vol1h < st.minVol1h) return (funnel.flow++, false);
         const blockedUntil = this.blockedPools.get(p.address) ?? 0;
         if (blockedUntil > now) return (funnel.blocked++, false);
@@ -804,7 +848,7 @@ export class Engine {
 
       journal(
         "SCAN",
-        `пулов ${pools.length} → отсев [не SOL ${funnel.sol}, black ${funnel.black}, TVL ${funnel.tvl}, freeze ${funnel.freeze}, холдеры ${funnel.holders}, оборот ${funnel.turnover}, возраст ${funnel.age}, блок ${funnel.blocked}] → прошли ${passed.length} → разобрано ${analysed.length} → лучший ${
+        `пулов ${pools.length} → отсев [не SOL ${funnel.sol}, black ${funnel.black}, TVL ${funnel.tvl}, freeze ${funnel.freeze}, холдеры ${funnel.holders}, оборот ${funnel.turnover}, fee/TVL ${funnel.feeTvl}, шаг ${funnel.binStep}, возраст ${funnel.age}, блок ${funnel.blocked}] → прошли ${passed.length} → разобрано ${analysed.length} → лучший ${
           analysed[0] ? `${analysed[0].pool.name} ${analysed[0].expectedDailyPct.toFixed(2)}%/сут (ATR ${analysed[0].atrPct.toFixed(2)}%)` : "—"
         } (${Date.now() - started} мс)`,
       );
@@ -942,7 +986,7 @@ export class Engine {
 
     if ((this.recentlyClosed.get(best.pool.address) ?? 0) > now) return;
     this.rotationMarks = this.rotationMarks.filter((t) => now - t < 3600_000);
-    if (this.rotationMarks.length >= 3) return;
+    if (this.rotationMarks.length >= 1) return;
 
     const worst = [...this.positions].sort((a, b) => this.positionRate(a) - this.positionRate(b))[0];
     if (!worst) return;
@@ -1021,8 +1065,13 @@ export class Engine {
     const entryPrice = plan.pool.currentPrice;
     // при нескольких слотах делим капитал поровну, а не 50% депозита на каждый
     const perSlot = this.deposit / Math.max(1, this.slots);
-    const capital = Math.min(plan.capital, this.cash, perSlot);
-    if (capital < 10) return;
+    const spend = Math.min(plan.capital, this.cash, perSlot);
+    if (spend < 10) return;
+    // Издержки входа. Симметричный диапазон требует ОБЕ стороны, то есть половину
+    // суммы надо обменять в токен: Jupiter-своп + слиппедж (0.2–0.4 %). Раньше это
+    // было ноль — при 52 входах набегало ~$25 «невидимых» потерь.
+    const entryCost = spend * (this.settings.entryCostPct / 100);
+    const capital = Math.max(1, spend - entryCost);
 
     const info = db
       .prepare(
@@ -1061,8 +1110,8 @@ export class Engine {
       );
     const id = Number(info.lastInsertRowid);
     db.prepare(
-      `UPDATE positions SET initial_capital = ?, friction_usd = 0, entry_atr_pct = ?, entry_range_pct = ? WHERE id = ?`,
-    ).run(capital, plan.atrPct, plan.rangePct, id);
+      `UPDATE positions SET initial_capital = ?, friction_usd = ?, entry_atr_pct = ?, entry_range_pct = ? WHERE id = ?`,
+    ).run(spend, entryCost, plan.atrPct, plan.rangePct, id);
 
     const bins: RtBin[] = plan.bins.map((b) => ({
       k: b.k,
@@ -1072,7 +1121,7 @@ export class Engine {
       feePerDay: b.feePerDay * (capital / plan.capital),
     }));
 
-    this.cash -= capital;
+    this.cash -= spend;
     const pos: RtPos = {
       id,
       pool: plan.pool,
@@ -1083,8 +1132,8 @@ export class Engine {
       solPriceUsd: pair.solPrice > 0 ? pair.solPrice : 200,
       tokenIsX: pair.solIsY,
       capital,
-      initialCapital: capital,
-      frictionPaid: 0,
+      initialCapital: spend,
+      frictionPaid: entryCost,
       vol30m: 0,
       outSince: 0,
       rotatePending: false,
@@ -1168,11 +1217,14 @@ export class Engine {
 
     journal(
       "ENTER",
-      `pos#${id} ${plan.pool.name} C=$${capital.toFixed(0)} 50/50 диапазон ±${(plan.rangePct * 100).toFixed(1)}% (концентрация ×${Math.round(plan.concentration)}) прогноз ${plan.expectedDailyPct.toFixed(2)}%/сут ATR ${plan.atrPct.toFixed(2)}%`,
+      `pos#${id} ${plan.pool.name} C=$${spend.toFixed(0)} (вход $${entryCost.toFixed(2)}) 50/50 диапазон ±${(plan.rangePct * 100).toFixed(1)}% ${plan.bins.length} бинов (концентрация ×${Math.round(plan.concentration)}) прогноз ${plan.expectedDailyPct.toFixed(2)}%/сут ATR ${plan.atrPct.toFixed(2)}% fee/TVL ${plan.pool.feeTvl24h.toFixed(2)}%`,
       {
         position: id,
         pool: plan.pool.name,
-        capital,
+        capital: spend,
+        netCapital: capital,
+        entryCost,
+        bins: plan.bins.length,
         price: entryPrice,
         rangePct: plan.rangePct,
         atrPct: plan.atrPct,
@@ -1244,7 +1296,7 @@ export class Engine {
     const scope = cause === "RANGE_ADJUST" ? "правкой диапазона" : "ребалансом";
     journal(
       "HEALTH",
-      `pos#${pos.id} ${pos.tokenSymbol} пересмотр перед ${scope}: ${health.verdict} · ATR ${health.atrPct.toFixed(2)}% (вход ${health.atrAtEntry.toFixed(2)}%, ${health.atrDriftPct >= 0 ? "+" : ""}${health.atrDriftPct.toFixed(0)}%) · диапазон ±${(health.rangePctNow * 100).toFixed(2)}% → цель ±${(health.rangePctTarget * 100).toFixed(2)}% · оборот ${health.turnover24.toFixed(2)}x · TVL $${Math.round(health.tvl)}`,
+      `pos#${pos.id} ${pos.tokenSymbol} пересмотр перед ${scope}: ${health.verdict} · ATR ${health.atrPct.toFixed(2)}% (вход ${health.atrAtEntry.toFixed(2)}%, ${health.atrDriftPct >= 0 ? "+" : ""}${health.atrDriftPct.toFixed(0)}%) · диапазон ±${(health.rangePctNow * 100).toFixed(2)}% → цель ±${(health.rangePctTarget * 100).toFixed(2)}% · fee/TVL ${health.feeTvlPct.toFixed(2)}%/сут · оборот ${health.turnover24.toFixed(2)}x · TVL $${Math.round(health.tvl)}`,
       {
         position: pos.id,
         cause,
@@ -1565,7 +1617,7 @@ export class Engine {
           : "";
       journal(
         "HEALTH",
-        `pos#${pos.id} ${pos.tokenSymbol}: ${health.verdict.toUpperCase()} · ATR ${health.atrPct.toFixed(2)}% (вход ${health.atrAtEntry.toFixed(2)}%, ${health.atrDriftPct >= 0 ? "+" : ""}${health.atrDriftPct.toFixed(0)}%) · диапазон ±${(pos.rangePct * 100).toFixed(2)}% (цель ±${(health.rangePctTarget * 100).toFixed(2)}%) · оборот ${health.turnover24.toFixed(2)}x · TVL $${Math.round(health.tvl)} · в коридоре ${(health.inRangeShare * 100).toFixed(0)}%${failNote}`,
+        `pos#${pos.id} ${pos.tokenSymbol}: ${health.verdict.toUpperCase()} · ATR ${health.atrPct.toFixed(2)}% (вход ${health.atrAtEntry.toFixed(2)}%, ${health.atrDriftPct >= 0 ? "+" : ""}${health.atrDriftPct.toFixed(0)}%) · диапазон ±${(pos.rangePct * 100).toFixed(2)}% (цель ±${(health.rangePctTarget * 100).toFixed(2)}%) · ${pos.bins.length} бинов · fee/TVL ${health.feeTvlPct.toFixed(2)}%/сут · оборот ${health.turnover24.toFixed(2)}x · TVL $${Math.round(health.tvl)} · в коридоре ${(health.inRangeShare * 100).toFixed(0)}%${failNote}`,
         {
           position: pos.id,
           verdict: health.verdict,
@@ -1578,6 +1630,8 @@ export class Engine {
           turnover24: health.turnover24,
           tvl: health.tvl,
           inRangeShare: health.inRangeShare,
+          feeTvlPct: health.feeTvlPct,
+          bins: pos.bins.length,
           change24h: health.change24h,
           failed: health.failed.map((c) => ({ key: c.key, value: c.value, limit: c.limit })),
           warn: health.warn.map((c) => c.key),
@@ -1889,6 +1943,20 @@ export class Engine {
         `pos#${pos.id} цена вышла за границу (${((rel - 1) * 100).toFixed(2)}%) → ждём ${this.settings.rangeBreakMinutes} мин`,
         { position: pos.id, price, rel, rangePct: pos.rangePct, outMinutes: 0 },
       );
+      // серия выходов по одному токену = он не держит диапазон; пауза на токен (лучшая практика: 12ч)
+      const sixHoursAgo = now - 6 * 3600_000;
+      const prev = (this.oorEvents.get(pos.tokenMint) ?? []).filter((t) => t > sixHoursAgo);
+      prev.push(now);
+      this.oorEvents.set(pos.tokenMint, prev);
+      const cdHours = Math.max(0, this.settings.tokenCooldownHours);
+      if (cdHours > 0 && prev.length >= 3 && (this.tokenCooldowns.get(pos.tokenMint) ?? 0) < now) {
+        this.tokenCooldowns.set(pos.tokenMint, now + cdHours * 3600_000);
+        journal(
+          "WARN",
+          `токен ${pos.tokenSymbol}: ${prev.length} выхода из диапазона за 6ч → пауза ${cdHours}ч (не входим снова, пока не успокоится)`,
+          { token: pos.tokenSymbol, mint: pos.tokenMint, exits: prev.length, cooldownHours: cdHours },
+        );
+      }
     } else if (action === "back_in") {
       journal(
         "RANGE_BACK",

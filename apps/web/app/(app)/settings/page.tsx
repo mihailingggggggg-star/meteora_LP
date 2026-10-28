@@ -169,7 +169,7 @@ export default function SettingsPage() {
               <Gauge className="h-4 w-4 text-accent2" />
               <div className="text-[13px] font-medium">Стратегия и риск</div>
               <Chip tone="accent" className="ml-auto">
-                сетка ±{(form?.maxRangePct ?? 5) / 2}% · 50/50
+                сетка ±{form?.maxRangePct ?? 10}% · {form?.distribution ?? "uniform"}
               </Chip>
             </div>
 
@@ -187,11 +187,11 @@ export default function SettingsPage() {
                     onChange={(v) => set({ minTurnover: v })}
                   />
                   <Field
-                    label="Волатильность ATR(30м,14)"
-                    hint="жёсткий стоп-кран: выше порога пул не рассматривается"
+                    label="Потолок волатильности ATR(30м)"
+                    hint="страховка: основной контроль — покрытие диапазона (≥2 ATR)"
                     value={form.maxAtrPct}
-                    min={0.5}
-                    max={5}
+                    min={1}
+                    max={15}
                     step={0.1}
                     suffix="%"
                     onChange={(v) => set({ maxAtrPct: v })}
@@ -322,6 +322,46 @@ export default function SettingsPage() {
                 </Section>
 
                 <Section icon={<ShieldAlert className="h-3.5 w-3.5" />} title="Фаза 5 · защита капитала">
+                  <Field
+                    label="Мин. доходность пула (fee/TVL)"
+                    hint="комиссии за сутки на доллар TVL; ниже — пул не окупает ребалансы"
+                    value={form.minFeeTvlPct ?? 1.5}
+                    min={0}
+                    max={10}
+                    step={0.1}
+                    suffix="% / сут"
+                    onChange={(v) => set({ minFeeTvlPct: v })}
+                  />
+                  <Field
+                    label="Горизонт удержания позиции"
+                    hint="на него масштабируется ATR при расчёте ширины диапазона"
+                    value={form.rangeHorizonHours ?? 4}
+                    min={0.5}
+                    max={24}
+                    step={0.5}
+                    suffix=" ч"
+                    onChange={(v) => set({ rangeHorizonHours: v })}
+                  />
+                  <Field
+                    label="Издержки входа"
+                    hint="своп в токеновую часть + слиппедж (реальная стоимость входа)"
+                    value={form.entryCostPct ?? 0.3}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    suffix="%"
+                    onChange={(v) => set({ entryCostPct: v })}
+                  />
+                  <Field
+                    label="Пауза на токен после выходов"
+                    hint="3 выхода из диапазона за 6 часов → не входим в этот токен"
+                    value={form.tokenCooldownHours ?? 6}
+                    min={0}
+                    max={24}
+                    step={1}
+                    suffix=" ч"
+                    onChange={(v) => set({ tokenCooldownHours: v })}
+                  />
                   <Field
                     label="Максимальный убыток в сделке"
                     hint="ограничивает капитал позиции через риск на диапазон"

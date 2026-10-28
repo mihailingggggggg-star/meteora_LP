@@ -73,6 +73,13 @@ export type StrategySettings = {
   utilization: number;
   /** форма распределения капитала по бинам: spot (колокол, как в Meteora), curve, uniform */
   distribution?: "spot" | "curve" | "uniform";
+  /** горизонт удержания, часы: на него масштабируется ATR при расчёте диапазона */
+  rangeHorizonHours?: number;
+  /** минимум/максимум бинов на сторону диапазона */
+  minBinsPerSide?: number;
+  maxBinsPerSide?: number;
+  /** минимальная доходность пула fee/TVL, %/сутки */
+  minFeeTvlPct?: number;
 };
 
 /**
@@ -97,8 +104,34 @@ export function buildBalancedPlan(opts: {
   if (turnover24 < settings.minTurnover) return null;
   if (!atrPct || atrPct > settings.maxAtrPct) return null;
 
-  // диапазон: 1.5 × ATR, но не шире maxRange и не уже 1% (та же формула, что и при пересмотре)
-  const halfRange = targetHalfRange(atrPct, settings);
+  // Доходность пула — главный фильтр. Проверяем и здесь, а не только в сканере,
+  // иначе ручной вход из скринера и ребаланс проходят мимо него.
+  const feeTvlPct = pool.feeTvl24h > 0 ? pool.feeTvl24h : pool.tvl > 0 ? (pool.fees24 / pool.tvl) * 100 : 0;
+  const feeTvlMin = settings.minFeeTvlPct ?? 0;
+  if (feeTvlMin > 0 && feeTvlPct < feeTvlMin) return null;
+
+  // диапазон: ATR × √(горизонт/30м), снэпнутый к целым бинам (см. targetHalfRange/gridFor)
+  const halfRangeRaw = targetHalfRange(atrPct, settings);
+  const grid = gridFor(halfRangeRaw, pool.binStep, settings);
+  if (!grid.ok) {
+    // шаг бина слишком крупный для нужного диапазона: получилось бы < 9 бинов на сторону
+    notes.push(
+      `bin step ${pool.binStep} bps слишком крупный: диапазон ±${(halfRangeRaw * 100).toFixed(2)}% = ${Math.round(
+        (halfRangeRaw * 10_000) / Math.max(1, pool.binStep),
+      )} бинов на сторону (нужно ≥ ${settings.minBinsPerSide ?? 9})`,
+    );
+    return null;
+  }
+  const halfRange = grid.halfRange;
+  // Диапазон обязан покрывать хотя бы 1.5 ATR: иначе позиция выходит из диапазона
+  // в первую же свечу (именно это и происходило: ±1.5 ATR и медиана 28 минут).
+  if (atrPct > 0 && halfRange < (2.0 * atrPct) / 100) {
+    notes.push(
+      `диапазон ±${(halfRange * 100).toFixed(2)}% покрывает только ${(halfRange * 100 / atrPct).toFixed(1)} ATR ` +
+        `(нужно ≥2 при ATR ${atrPct.toFixed(2)}%) — позиция вылетит за 1–2 часа`,
+    );
+    return null;
+  }
   const priceRef = candles30m[candles30m.length - 1]?.c || pool.currentPrice;
   const step = Math.max(0.0005, pool.binStep / 10_000);
 
@@ -107,7 +140,7 @@ export function buildBalancedPlan(opts: {
   //   curve — тяжелее к краям диапазона
   //   uniform — равномерно
   const layout = settings.distribution ?? "spot";
-  const count = Math.max(4, Math.min(40, Math.round((2 * halfRange) / step)));
+  const count = Math.max(6, Math.min(70, grid.binsPerSide * 2));
   const bins: PlanBin[] = [];
   for (let i = 0; i < count; i++) {
     const rel = -halfRange + ((i + 0.5) / count) * (2 * halfRange);
@@ -337,12 +370,67 @@ export function decideRangeAction(opts: {
  * диапазон сжимается/расширяется вместе с волатильностью, но не выходит за maxRangePct
  * и не становится уже 1%.
  */
+export type RangeDynamics = {
+  rangeAtrMult: number;
+  maxRangePct: number;
+  /** горизонт удержания позиции, часы — на него масштабируется ATR */
+  rangeHorizonHours?: number;
+  /** сколько бинов минимум должно быть в каждую сторону (иначе пул «слишком крупный шаг») */
+  minBinsPerSide?: number;
+  /** верхняя граница бинов на сторону (программа даёт 70 бинов на позицию по умолчанию) */
+  maxBinsPerSide?: number;
+};
+
+/**
+ * Целевая половина диапазона, в долях цены.
+ *
+ * Ошибка, которую это исправляет: раньше диапазон был `1.5 × ATR(30m)` — то есть
+ * 1.5 размаха ОДНОЙ 30-минутной свечи. По журналу 27–28.10 медиана до первого выхода
+ * из диапазона составила 28 минут при 85 % позиций, вылетевших за час.
+ *
+ * Размах цены растёт как корень из времени, поэтому ATR масштабируется на
+ * √(горизонт / 30 мин). При горизонте 4 ч это ×2.83: диапазон становится
+ * в 2.8 раза шире и живёт в ~8 раз дольше (28 мин → 3–4 ч).
+ *
+ * Границы: не уже 1.5 % (иначе шум выбивает мгновенно) и не шире maxRangePct.
+ */
 export function targetHalfRange(
   atrPct: number,
-  settings: Pick<StrategySettings, "rangeAtrMult" | "maxRangePct">,
+  settings: Pick<StrategySettings, "rangeAtrMult" | "maxRangePct"> & {
+    rangeHorizonHours?: number;
+  },
 ): number {
-  const raw = settings.rangeAtrMult * (atrPct > 0 ? atrPct : 0);
-  return Math.min(settings.maxRangePct, Math.max(1.0, raw)) / 100;
+  const horizon = Math.max(0.5, settings.rangeHorizonHours ?? 4);
+  const scaled = settings.rangeAtrMult * Math.max(0, atrPct) * Math.sqrt(horizon / 0.5);
+  const pct = Math.min(settings.maxRangePct, Math.max(1.5, scaled));
+  return pct / 100;
+}
+
+/**
+ * Привязка диапазона к сетке бинов.
+ *
+ * Вторая ошибка: ширина диапазона задавалась в процентах, а число бинов получалось
+ * случайным (8 при bin step 25 bps и ±1 %, 50 при bin step 5 bps и ±1 %). 8 бинов —
+ * это Spot-Concentrated по классификации Meteora, то есть максимальный риск выхода.
+ * Теперь диапазон снэпится к целым бинам и держится в коридоре 18–70 бинов.
+ */
+export function gridFor(
+  halfRange: number,
+  binStepBps: number,
+  settings: { minBinsPerSide?: number; maxBinsPerSide?: number },
+): { binsPerSide: number; halfRange: number; totalBins: number; ok: boolean } {
+  const step = Math.max(0.0001, binStepBps / 10_000);
+  const want = Math.round(halfRange / step);
+  const min = Math.max(3, Math.round(settings.minBinsPerSide ?? 9));
+  const max = Math.max(min, Math.round(settings.maxBinsPerSide ?? 35));
+  const binsPerSide = Math.min(max, Math.max(min, want));
+  return {
+    binsPerSide,
+    halfRange: binsPerSide * step,
+    totalBins: binsPerSide * 2 + 1,
+    // пул годится, только если для целевого диапазона реально нужно ≥ min бинов на сторону
+    ok: want >= min,
+  };
 }
 
 export type FilterCheck = {
@@ -366,6 +454,8 @@ export type PoolHealth = {
   atrDriftPct: number;
   turnover24: number;
   turnover1h: number;
+  /** доходность пула: комиссии за сутки на доллар TVL, % */
+  feeTvlPct: number;
   tvl: number;
   vol1h: number;
   rangePctNow: number;
@@ -398,6 +488,7 @@ export function evaluatePoolHealth(opts: {
     minAgeHours?: number;
     minHolders?: number;
     maxTurnover?: number;
+    minFeeTvlPct?: number;
   };
   /** ATR на момент входа/последнего ребаланса — база для оценки дрейфа */
   atrAtEntry: number;
@@ -449,6 +540,53 @@ export function evaluatePoolHealth(opts: {
     unit: "x",
     severity: "hard",
   });
+  // ── доходность пула: главный фильтр, который у нас отсутствовал.
+  // Пулы с fee/TVL 0.5–1.3 %/сут не окупают даже один ребаланс (12–30 часов на круг),
+  // поэтому «просадка вместо комиссий» была предопределена ещё на входе.
+  const feeTvlPct = pool.feeTvl24h > 0 ? pool.feeTvl24h : pool.tvl > 0 ? (pool.fees24 / pool.tvl) * 100 : 0;
+  const feeTvlMin = settings.minFeeTvlPct ?? 0;
+  if (feeTvlMin > 0) {
+    add({
+      key: "feeTvl",
+      label: "Доходность fee/TVL",
+      ok: feeTvlPct >= feeTvlMin * 0.6,
+      value: feeTvlPct,
+      limit: feeTvlMin * 0.6,
+      unit: "%/сут",
+      severity: "hard",
+      note:
+        feeTvlPct < feeTvlMin
+          ? `ниже нормы ${feeTvlMin}%/сут — позиция не окупает обслуживание`
+          : undefined,
+    });
+    add({
+      key: "feeTvlSoft",
+      label: "Доходность на уровне входа",
+      ok: feeTvlPct >= feeTvlMin,
+      value: feeTvlPct,
+      limit: feeTvlMin,
+      unit: "%/сут",
+      severity: "soft",
+      note: feeTvlPct < feeTvlMin ? "пул подешевел по комиссиям" : undefined,
+    });
+  }
+
+  // покрывает ли текущий диапазон волатильность (1.5 ATR) — при росте ATR
+  // позиция перестаёт быть осмысленной даже без пробоя
+  {
+    const covers = opts.rangePct >= (2.0 * atrPct) / 100;
+    add({
+      key: "rangeCoversAtr",
+      label: "Диапазон покрывает ATR",
+      ok: covers,
+      value: opts.rangePct * 100,
+      limit: 2.0 * atrPct,
+      unit: "%",
+      severity: "hard",
+      note: covers ? undefined : "волатильность выросла выше ширины сетки — позиция не успевает зарабатывать",
+    });
+  }
+
   add({
     key: "atr",
     label: "ATR(30m)",
@@ -543,6 +681,7 @@ export function evaluatePoolHealth(opts: {
     ...failed.map((c) => c.key),
     ...warn.map((c) => c.key),
     `atr${atrPct.toFixed(1)}`,
+    `ftv${feeTvlPct.toFixed(1)}`,
     `rng${(rangePctTarget * 100).toFixed(1)}`,
   ].join("|");
 
@@ -556,6 +695,7 @@ export function evaluatePoolHealth(opts: {
     atrDriftPct,
     turnover24,
     turnover1h,
+    feeTvlPct,
     tvl: pool.tvl,
     vol1h: pool.vol1h,
     rangePctNow: opts.rangePct,

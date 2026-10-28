@@ -43,19 +43,33 @@ export const env = {
   jupiterBase: process.env.JUPITER_BASE || "https://lite-api.jup.ag/swap/v1",
   strategy: {
     // ── Фаза 1: фильтры пула
-    minTurnover: num(process.env.MIN_TURNOVER, 3.0), // Vol/TVL ≥ 3.0 (идеально 5–10)
+    minTurnover: num(process.env.MIN_TURNOVER, 1.0), // Vol/TVL: вторичный фильтр после fee/TVL
     maxTurnover: num(process.env.MAX_TURNOVER, 40),
-    maxAtrPct: num(process.env.MAX_ATR_PCT, 2.0), // ATR(30m,14) ≤ 2.0%
+    // ATR(30m,14). Жёсткий «геометрический» контроль ниже: диапазон должен покрывать
+    // минимум 1.5 ATR, поэтому реальный предел диктует maxRangePct, а не эта цифра.
+    maxAtrPct: num(process.env.MAX_ATR_PCT, 6.5),
     minPoolTvl: num(process.env.MIN_POOL_TVL_USD, 50_000),
     minTxns24h: num(process.env.MIN_TXNS_24H, 0),
+    /** максимальный шаг бина: при 150 bps и ATR 4 % диапазон ещё даёт ≥9 бинов на сторону */
+    maxBinStepBps: num(process.env.MAX_BIN_STEP_BPS, 150),
     minHolders: num(process.env.MIN_HOLDERS, 300),
     minAgeHours: num(process.env.MIN_POOL_AGE_HOURS, 6),
     minVol1h: num(process.env.MIN_VOL_1H_USD, 500),
 
     // ── Фаза 2: вход
     budgetPct: num(process.env.POSITION_BUDGET_PCT, 50), // доля депозита на позицию
-    rangeAtrMult: num(process.env.RANGE_ATR_MULT, 1.5), // диапазон = 1.5 × ATR
-    maxRangePct: num(process.env.MAX_RANGE_PCT, 5.0), // полная ширина диапазона, %
+    rangeAtrMult: num(process.env.RANGE_ATR_MULT, 1.5), // ATR-множитель на 30-минутный горизонт
+    maxRangePct: num(process.env.MAX_RANGE_PCT, 10.0), // максимальная полуширина диапазона, %
+    /** горизонт удержания: диапазон масштабируется как ATR × √(горизонт/30м) */
+    rangeHorizonHours: num(process.env.RANGE_HORIZON_HOURS, 4),
+    minBinsPerSide: num(process.env.MIN_BINS_PER_SIDE, 9),
+    maxBinsPerSide: num(process.env.MAX_BINS_PER_SIDE, 35),
+    /** минимальная доходность пула: fee/TVL за 24ч, %/сутки (лучшая практика: 1.5–5) */
+    minFeeTvlPct: num(process.env.FEE_TVL_MIN_PCT, 1.5),
+    /** цена входа: своп в токеновую часть + слиппедж, % от суммы позиции */
+    entryCostPct: num(process.env.ENTRY_COST_PCT, 0.3),
+    /** пауза на токен после серии выходов из диапазона, часы */
+    tokenCooldownHours: num(process.env.TOKEN_COOLDOWN_HOURS, 6),
     frictionPct: num(process.env.FRICTION_PCT, 0.15), // издержки свопа при ребалансе
     maxLossPerTradePct: num(process.env.MAX_LOSS_PER_TRADE_PCT, 3.0),
     maxDailyLossPct: num(process.env.MAX_DAILY_LOSS_PCT, 5.0),
@@ -78,15 +92,17 @@ export const env = {
     // ── служебное
     targetDailyPct: num(process.env.TARGET_DAILY_YIELD_PCT, 2.0),
     utilization: num(process.env.CAPITAL_UTILISATION, 0.85),
-    distribution: (process.env.DISTRIBUTION === "curve"
-      ? "curve"
-      : process.env.DISTRIBUTION === "uniform"
-        ? "uniform"
-        : "spot") as "spot" | "curve" | "uniform",
+    // uniform = Meteora Spot (равномерно по бинам) — рекомендованный дефолт для волатильных пар.
+    // "spot" у нас — колокол вокруг цены (по смыслу это Meteora Curve), "curve" — акцент на края (Bid-Ask).
+    distribution: (process.env.DISTRIBUTION === "spot"
+      ? "spot"
+      : process.env.DISTRIBUTION === "curve"
+        ? "curve"
+        : "uniform") as "spot" | "curve" | "uniform",
     claimIntervalHours: num(process.env.CLAIM_INTERVAL_HOURS, 2),
     maxHoldHours: num(process.env.MAX_HOLD_HOURS, 24),
     // сколько ждём возврата цены в диапазон, прежде чем ребалансировать
-    rangeBreakMinutes: num(process.env.RANGE_BREAK_MINUTES, 10),
+    rangeBreakMinutes: num(process.env.RANGE_BREAK_MINUTES, 30),
     claimThresholdPct: num(process.env.CLAIM_THRESHOLD_PCT, 0.5),
     // ── пересмотр пула и динамический диапазон
     /** во сколько раз ATR может превысить лимит входа, прежде чем выходим, % */
@@ -99,7 +115,7 @@ export const env = {
     rangeAdjustMinPct: num(process.env.RANGE_ADJUST_MIN_PCT, 20),
     /** не чаще одного сдвига сетки за это время */
     rangeAdjustCooldownMin: num(process.env.RANGE_ADJUST_COOLDOWN_MIN, 30),
-    scanIntervalSeconds: num(process.env.SCAN_INTERVAL_SECONDS, 45),
+    scanIntervalSeconds: num(process.env.SCAN_INTERVAL_SECONDS, 300),
     exitCostPct: num(process.env.FRICTION_PCT, 0.15),
   },
   wsolMint: "So11111111111111111111111111111111111111112",
