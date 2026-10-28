@@ -1075,7 +1075,18 @@ export class Engine {
     // при нескольких слотах делим капитал поровну, а не 50% депозита на каждый
     const perSlot = this.deposit / Math.max(1, this.slots);
     const spend = Math.min(plan.capital, this.cash, perSlot);
-    if (spend < (this.settings.minPositionUsd ?? 1)) return;
+    const minPos = this.settings.minPositionUsd ?? 1;
+    if (spend < minPos) {
+      // раньше здесь был молчаливый return — в журнале не было видно, почему вход не состоялся
+      journal("SKIP", `сумма $${spend.toFixed(2)} меньше минимума $${minPos} — ${plan.pool.name} пропущен`, {
+        spend: Number(spend.toFixed(2)),
+        minPositionUsd: minPos,
+        capital: plan.capital,
+        cash: this.cash,
+        perSlot,
+      });
+      return;
+    }
     // Издержки входа. Симметричный диапазон требует ОБЕ стороны, то есть половину
     // суммы надо обменять в токен: Jupiter-своп + слиппедж (0.2–0.4 %). Раньше это
     // было ноль — при 52 входах набегало ~$25 «невидимых» потерь.
