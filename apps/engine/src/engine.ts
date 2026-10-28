@@ -63,6 +63,10 @@ type RtPos = {
   lastRangeAdjustAt: number;
   /** последний снимок пула из API — чтобы не запрашивать повторно в том же тике */
   freshPool?: Pool | null;
+  /** суммарные комиссии на момент последнего ребаланса — для честной оценки «убыточности» */
+  feesAtRebalance: number;
+  /** сработал стоп серии убыточных ребалансов, но позиция в плюсе — ребалансы запрещены */
+  noMoreRebalances: boolean;
   bins: RtBin[];
   filled: Set<number>;
   feesAccrued: number;
@@ -142,7 +146,7 @@ const SETTINGS_LIMITS: Record<string, { min: number; max: number; int?: boolean 
   maxDailyLossPct: { min: 0.1, max: 100 },
   utilization: { min: 0.05, max: 1 },
   // жёсткий предел: одновременно не больше 3 позиций — из UI это не обходится
-  maxPositions: { min: 1, max: 3, int: true },
+  maxPositions: { min: 1, max: 2, int: true },
   maxRebalancesPerDay: { min: 0, max: 100, int: true },
   consecutiveLossStop: { min: 1, max: 20, int: true },
   earlyExitTurnover: { min: 0, max: 100 },
@@ -201,6 +205,10 @@ export class Engine {
   private rotChecks = 0;
   cooldownUntil = 0;
   blockedPools = new Map<string, number>();
+  /** когда выходили из пула — обратно не входим 60 минут (защита от «пилы» CARDS↔CARDS) */
+  recentlyClosed = new Map<string, number>();
+  /** отметки времени ротаций — не больше 3 в час */
+  rotationMarks: number[] = [];
 
   settings: StrategySettings & {
     minVol1h: number;
@@ -259,10 +267,10 @@ export class Engine {
 
   /** Сколько позиций держим одновременно: 1 до $10k, дальше — диверсификация. */
   get slots(): number {
-    // жёсткий предел: 3 позиции одновременно, независимо от депозита
-    const base = Math.min(3, this.settings.maxPositions);
+    // жёсткий предел: не больше 2 позиций одновременно, независимо от депозита
+    const base = Math.max(1, Math.min(2, this.settings.maxPositions));
     if (this.deposit >= env.strategy.diversifyFromUsd) {
-      return Math.min(3, Math.max(base, env.strategy.maxPositionsLarge));
+      return Math.min(2, Math.max(base, env.strategy.maxPositionsLarge));
     }
     return base;
   }
@@ -279,19 +287,19 @@ export class Engine {
     const savedSettings = getSetting<any>("engine.settings", null);
     if (savedSettings) {
       const merged: any = { ...this.settings, ...savedSettings };
-      // жёсткий предел: не больше 3 позиций, даже если в базе сохранено старое значение
+      // жёсткий предел: не больше 2 позиций, даже если в базе сохранено старое значение (например 3)
       const savedSlots = Number(merged.maxPositions);
-      merged.maxPositions = Number.isFinite(savedSlots) ? Math.min(3, Math.max(1, savedSlots)) : 3;
+      merged.maxPositions = Number.isFinite(savedSlots) ? Math.min(2, Math.max(1, savedSlots)) : 2;
       merged.maxHoldHours = Number(merged.maxHoldHours) || env.strategy.maxHoldHours || 24;
       merged.rangeBreakMinutes = Number(merged.rangeBreakMinutes) || env.strategy.rangeBreakMinutes || 10;
       this.settings = merged;
     }
-    // миграция: раньше по умолчанию был 1 слот — с новой логикой ротации нужно до 3.
-    // Проверяем ВНЕ блока сохранённых настроек: значение могло прийти и из .env (MAX_POSITIONS=1).
-    if (this.settings.maxPositions < 2) {
-      this.settings.maxPositions = 3;
+    // жёсткий предел 2 слота проверяем вне блока сохранённых настроек:
+    // значение могло прийти из .env (MAX_POSITIONS) или из старой базы (3)
+    if (this.settings.maxPositions > 2) {
+      this.settings.maxPositions = 2;
       setSetting("engine.settings", this.settings);
-      journal("BOOT", "миграция: слотов 1 → 3 (ротация на резервной части депозита)");
+      journal("BOOT", "жёсткий предел: слотов не больше 2 (было больше)");
     }
     this.restore();
     this.reconcile();
@@ -461,6 +469,8 @@ export class Engine {
           rangeNeedsAdjust: false,
           lastRangeAdjustAt: row.last_range_adjust_at ?? 0,
           freshPool: null,
+          feesAtRebalance: (row.fees_usd ?? 0) + (row.claimed_usd ?? 0),
+          noMoreRebalances: false,
           bins,
           filled: new Set<number>(),
           feesAccrued: row.fees_usd ?? 0,
@@ -718,6 +728,8 @@ export class Engine {
         if (p.vol1h < st.minVol1h) return (funnel.flow++, false);
         const blockedUntil = this.blockedPools.get(p.address) ?? 0;
         if (blockedUntil > now) return (funnel.blocked++, false);
+        // только что вышли из этого пула — минимум час не возвращаемся
+        if ((this.recentlyClosed.get(p.address) ?? 0) > now) return (funnel.blocked++, false);
         return true;
       });
 
@@ -905,24 +917,60 @@ export class Engine {
    * Ротация: слот занят, но на рынке есть пул, который кратно выгоднее.
    * Нужны два подтверждения подряд и возраст позиции > 30 минут, чтобы не дёргаться на шуме.
    */
+  /**
+   * Ротация в более доходный пул — ИСКЛЮЧЕНИЕ, а не режим работы.
+   *
+   * Что было не так (журнал 27–28.10): 35 ротаций за 14 часов, медиана жизни позиции
+   * 34 минуты, средний результат −$0.50; один CARDS-SOL дал 13 кругов и −$14.81.
+   * Причина — сравнение мгновенного liveDailyPct молодой позиции (медиана 1.1 %/сут,
+   * то есть шум) с оптимистичным прогнозом лучшего пула: коэффициент «×3…×16» возникал
+   * почти всегда, и бот менял позицию, платя слиппедж 0.27 % и фиксируя IL.
+   *
+   * Теперь ротация требует одновременно:
+   *  1) позиция пожила ≥ 90 минут (за 30–40 минут комиссии не окупают круг);
+   *  2) цена не ниже входа (rel ≥ 0.995) — не фиксируем убыток по телу;
+   *  3) сравнение по max(живой темп, 60 % прогноза), а не по мгновенному шуму;
+   *  4) прогноз лучшего пула ≥ 3.5× текущего;
+   *  5) прирост за 6 часов в долларах больше стоимости круга (выход+вход ≈ 0.6 %);
+   *  6) не больше 3 ротаций в час;
+   *  7) не входим в пул, который покинули меньше часа назад.
+   */
   private async maybeRotate(analysed: StrategyPlan[]) {
     const best = analysed[0];
     if (!best) return;
-    const worst = [...this.positions].sort(
-      (a, b) => this.positionRate(a) - this.positionRate(b),
-    )[0];
+    const now = Date.now();
+
+    if ((this.recentlyClosed.get(best.pool.address) ?? 0) > now) return;
+    this.rotationMarks = this.rotationMarks.filter((t) => now - t < 3600_000);
+    if (this.rotationMarks.length >= 3) return;
+
+    const worst = [...this.positions].sort((a, b) => this.positionRate(a) - this.positionRate(b))[0];
     if (!worst) return;
     if (worst.pool.address === best.pool.address) return;
-    if (Date.now() - worst.openedAt < 30 * 60_000) return;
+    if (now - worst.openedAt < 90 * 60_000) return;
 
-    const currentRate = this.positionRate(worst);
+    const rel = worst.lastPrice / worst.entryPrice;
+    if (rel < 0.995) return; // выходить в минус по телу ради «лучшего» пула — запрещено
+
+    const currentRate = Math.max(this.positionRate(worst), worst.predictedDailyPct * 0.6);
     const gain = best.expectedDailyPct / Math.max(0.05, currentRate);
-    const minGain = 1.8;
+    const minGain = 3.5;
     if (gain < minGain) {
       this.rotCandidate = null;
       this.rotChecks = 0;
       return;
     }
+
+    // окупаемость в деньгах: прирост за 6 часов против стоимости круга (≈0.6 % капитала)
+    const hoursToHold = 6;
+    const extraUsd = ((best.expectedDailyPct - currentRate) / 100 / 24) * hoursToHold * worst.capital;
+    const roundTripUsd = worst.capital * 0.006;
+    if (extraUsd < roundTripUsd) {
+      this.rotCandidate = null;
+      this.rotChecks = 0;
+      return;
+    }
+
     if (this.rotCandidate === best.pool.address) this.rotChecks += 1;
     else {
       this.rotCandidate = best.pool.address;
@@ -932,9 +980,24 @@ export class Engine {
 
     this.rotChecks = 0;
     this.rotCandidate = null;
+    this.rotationMarks.push(now);
     journal(
       "EXIT_ROTATE",
-      `pos#${worst.id} ${worst.pool.name} даёт ${currentRate.toFixed(2)}%/сут, а ${best.pool.name} — ${best.expectedDailyPct.toFixed(2)}%/сут (×${gain.toFixed(1)}) → ротация`,
+      `pos#${worst.id} ${worst.pool.name} даёт ${currentRate.toFixed(2)}%/сут (живой ${this.positionRate(worst).toFixed(2)}), а ${best.pool.name} — ${best.expectedDailyPct.toFixed(2)}%/сут (×${gain.toFixed(1)}) · возраст ${((now - worst.openedAt) / 60_000).toFixed(0)} мин · rel ${rel.toFixed(4)} · выгода за 6ч ≈ $${extraUsd.toFixed(2)} против круга $${roundTripUsd.toFixed(2)} → ротация`,
+      {
+        position: worst.id,
+        from: worst.pool.name,
+        to: best.pool.name,
+        currentRate,
+        liveRate: this.positionRate(worst),
+        bestRate: best.expectedDailyPct,
+        gain,
+        rel,
+        ageMinutes: (now - worst.openedAt) / 60_000,
+        extraUsd,
+        roundTripUsd,
+        rotationsLastHour: this.rotationMarks.length,
+      },
     );
     await this.closePositionById(worst.id, "EXIT_ROTATE");
   }
@@ -1037,6 +1100,8 @@ export class Engine {
       rangeNeedsAdjust: false,
       lastRangeAdjustAt: 0,
       freshPool: null,
+      feesAtRebalance: 0,
+      noMoreRebalances: false,
       bins,
       filled: new Set<number>(bins.filter((b) => b.priceRel <= 1).map((b) => b.k)),
       feesAccrued: 0,
@@ -1253,8 +1318,13 @@ export class Engine {
     const frictionUsd = value * (this.settings.frictionPct / 100);
     // новый размер ограничен и риск-лимитом под новый ATR, и ликвидностью коридора (plan.capital)
     const newCapital = Math.max(0, Math.min(value - frictionUsd, plan.capital));
-    const lossThreshold = pos.capital * (1 - Math.max(0.002, (2 * this.settings.frictionPct) / 100));
-    const lost = newCapital < lossThreshold;
+    // «убыточный» ребаланс считаем по NET с прошлого ребаланса: изменение капитала
+    // ПЛЮС комиссии, заработанные за это время. Раньше смотрели только тело позиции —
+    // из-за этого LMAO с +$41 комиссий набирала «серию убытков» и закрывалась в +23 вместо +36.
+    const feesNow = pos.feesAccrued + pos.feesClaimed;
+    const feesSince = Math.max(0, feesNow - pos.feesAtRebalance);
+    const netSince = newCapital - pos.capital + feesSince;
+    const lost = netSince < -Math.max(0.5, pos.capital * 0.002);
 
     const oldCapital = pos.capital;
     const oldRange = pos.rangePct;
@@ -1297,6 +1367,7 @@ export class Engine {
     }
     pos.rangeNeedsAdjust = false;
     pos.outSince = 0;
+    pos.feesAtRebalance = feesNow;
 
     db.prepare(
       `UPDATE positions SET capital=?, entry_price=?, p_avg_price=?, p_exit=?, bins=?, rebalances=?, consecutive_losses=?, friction_usd=?, range_pct=?, atr_pct=?, entry_atr_pct=?, entry_range_pct=?, range_adjusts=?, last_range_adjust_at=?, updated_at=? WHERE id=?`,
@@ -1343,6 +1414,8 @@ export class Engine {
         rebalances: pos.rebalances,
         rangeAdjusts: pos.rangeAdjusts,
         consecutiveLosses: pos.consecutiveLosses,
+        netSinceRebalance: netSince,
+        feesSinceRebalance: feesSince,
         binsCount: pos.bins.length,
         expectedDailyPct: plan.expectedDailyPct,
         outMinutes: pos.outSince ? (now - pos.outSince) / 60_000 : null,
@@ -1363,10 +1436,26 @@ export class Engine {
     });
 
     if (pos.consecutiveLosses >= this.settings.consecutiveLossStop) {
-      journal("STOP", `pos#${pos.id} ${pos.consecutiveLosses} убыточных ребаланса подряд → полный выход и смена пула`, {
+      const posPnl = pos.capital + pos.feesAccrued + pos.feesClaimed - pos.initialCapital;
+      // прибыльную позицию стопом не режем: фиксировать IL и издержки на плюсе — худшее,
+      // что можно сделать. Вместо выхода запрещаем дальнейшие ребалансы.
+      if (posPnl > 0) {
+        if (!pos.noMoreRebalances) {
+          pos.noMoreRebalances = true;
+          journal(
+            "STOP",
+            `pos#${pos.id} ${pos.consecutiveLosses} ребаланса подряд в минус по телу, но позиция в плюсе +$${posPnl.toFixed(2)} → ребалансы запрещены, держим до выхода по фильтрам/ротации`,
+            { position: pos.id, consecutiveLosses: pos.consecutiveLosses, posPnl, price, rel, action: "block_rebalances" },
+          );
+        }
+        return;
+      }
+      journal("STOP", `pos#${pos.id} ${pos.consecutiveLosses} убыточных ребаланса подряд (net −$${Math.abs(netSince).toFixed(2)}) → полный выход и смена пула`, {
         position: pos.id,
         consecutiveLosses: pos.consecutiveLosses,
         stopAfter: this.settings.consecutiveLossStop,
+        netSince,
+        posPnl,
         price,
         rel,
       });
@@ -1542,14 +1631,20 @@ export class Engine {
     pos.breachCount = 0;
 
     // ── 2. пул «остыл» (оборот/комиссии) — отдельная мягкая проверка, как раньше
-    const feeDrop = pos.liveDailyPct > 0 && pos.liveDailyPct < Math.max(0.4, pos.predictedDailyPct * 0.35);
-    const tooQuiet = (pos.turnover24 > 0 && pos.turnover24 < this.settings.earlyExitTurnover) || feeDrop;
+    // «пул остыл»: раньше проверяли мгновенный liveDailyPct — за 10–15 минут комиссии
+    // не успевают начислиться, это шум (9 сделок закрылись в среднем за 11 минут, −$6.49).
+    // Теперь: не раньше 45 минут жизни и по накопленному темпу за всю жизнь позиции.
+    const ageH = (now - pos.openedAt) / 3600_000;
+    const cumRate = ageH > 0.05 ? ((pos.feesAccrued + pos.feesClaimed) / Math.max(1, pos.capital) / ageH) * 24 * 100 : 0;
+    const feeDrop = ageH >= 1 && cumRate < Math.max(0.4, pos.predictedDailyPct * 0.35);
+    const quietPool = ageH >= 0.75 && pos.turnover24 > 0 && pos.turnover24 < this.settings.earlyExitTurnover;
+    const tooQuiet = quietPool || feeDrop;
     pos.lowConditionChecks = tooQuiet ? pos.lowConditionChecks + 1 : 0;
     if (pos.lowConditionChecks >= 2) {
       journal(
         "STOP",
-        `pos#${pos.id} условия ухудшились (ATR ${health.atrPct.toFixed(2)}%, оборот ${pos.turnover24.toFixed(2)}x, факт ${pos.liveDailyPct.toFixed(2)}%/сут) → выход`,
-        { position: pos.id, atrPct: health.atrPct, turnover24: pos.turnover24, liveDailyPct: pos.liveDailyPct },
+        `pos#${pos.id} условия ухудшились (ATR ${health.atrPct.toFixed(2)}%, оборот ${pos.turnover24.toFixed(2)}x, накопленный темп ${cumRate.toFixed(2)}%/сут за ${ageH.toFixed(1)}ч) → выход`,
+        { position: pos.id, atrPct: health.atrPct, turnover24: pos.turnover24, cumRate, ageH, liveDailyPct: pos.liveDailyPct },
       );
       await this.closePositionById(pos.id, "EXIT_FLOW", price);
       return true;
@@ -1801,6 +1896,17 @@ export class Engine {
       );
       pos.outSince = 0;
     } else if (action === "rebalance") {
+      if (pos.noMoreRebalances) {
+        if (!(pos as any).noRebLogged) {
+          (pos as any).noRebLogged = true;
+          journal("WARN", `pos#${pos.id} пробой диапазона, но ребалансы запрещены (стоп серии на плюсе) — держим до выхода по фильтрам/ротации`, {
+            position: pos.id,
+            price,
+            rel,
+          });
+        }
+        return;
+      }
       await this.rebalance(pos, price);
       return;
     } else if (action === "close_rotate") {
@@ -2065,6 +2171,8 @@ export class Engine {
     );
     this.log(reason, `pos#${pos.id} закрыта: $${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)`);
 
+    // после выхода не входим в этот пул 60 минут — защита от «пилы» (13 кругов CARDS-SOL)
+    this.recentlyClosed.set(pos.pool.address, Date.now() + 60 * 60_000);
     this.positions = this.positions.filter((p) => p.id !== pos.id);
     this.persist();
     this.cooldownUntil = Date.now() + 30_000;

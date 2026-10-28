@@ -70,8 +70,9 @@ export const env = {
     earlyExitAtrPct: num(process.env.EARLY_EXIT_ATR_PCT, 3.0),
     profitTakePct: num(process.env.PROFIT_TAKE_PCT, 20),
     // жёсткий предел: одновременно не больше 3 позиций (каждая — своя часть депозита)
-    maxPositions: Math.min(3, num(process.env.MAX_POSITIONS, 3)),
-    maxPositionsLarge: num(process.env.MAX_POSITIONS_LARGE, 5),
+    // жёсткий предел: 2 позиции одновременно (депозит делится пополам)
+    maxPositions: Math.min(2, num(process.env.MAX_POSITIONS, 2)),
+    maxPositionsLarge: Math.min(2, num(process.env.MAX_POSITIONS_LARGE, 2)),
     diversifyFromUsd: num(process.env.DIVERSIFY_FROM_USD, 10_000),
 
     // ── служебное
@@ -116,7 +117,7 @@ export const env = {
     /** жёсткий лимит на одну позицию в долларах (0 — без отдельного лимита) */
     maxPositionUsd: num(process.env.LIVE_MAX_POSITION_USD, 100),
     /** одновременно не больше 3 позиций */
-    maxPositions: Math.min(3, num(process.env.LIVE_MAX_POSITIONS, 3)),
+    maxPositions: Math.min(2, num(process.env.LIVE_MAX_POSITIONS, 2)),
     slippagePct: num(process.env.LIVE_SLIPPAGE_PCT, 1.5),
     priorityFeeMicroLamports: num(process.env.LIVE_PRIORITY_FEE_MICROLAMPORTS, 50_000),
     /** сколько SOL держим на газ и аренду позиций — не тратим на ликвидность */

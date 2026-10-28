@@ -434,11 +434,11 @@ export default function SettingsPage() {
                     onChange={(v) => set({ scanIntervalSeconds: v })}
                   />
                   <Field
-                    label="Позиций одновременно (до $10k)"
-                    hint="в новой логике по умолчанию 1; при депозите $10k+ включается диверсификация"
+                    label="Позиций одновременно"
+                    hint="жёсткий предел — 2; депозит делится пополам между позициями"
                     value={form.maxPositions}
                     min={1}
-                    max={6}
+                    max={2}
                     step={1}
                     suffix=""
                     onChange={(v) => set({ maxPositions: v })}
