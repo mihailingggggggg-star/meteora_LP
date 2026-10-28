@@ -16,3 +16,9 @@ journal/*.md
 *.tar.gz
 apps/web/.next/
 /.run/
+data/*.bak-*
+data/backups/
+journal/archive/
+.config/
+.npm/
+data/.keep
