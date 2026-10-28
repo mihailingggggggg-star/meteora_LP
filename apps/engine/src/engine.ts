@@ -316,6 +316,14 @@ export class Engine {
       this.halted = saved.halted ?? false;
       this.banked = saved.banked ?? 0;
       this.nextMilestone = saved.nextMilestone ?? this.deposit * 1.1;
+      // смена режима (demo ↔ live) — это НОВЫЙ журнал: капитал прошлого режима не
+      // переносим, иначе получалось «демо-кэш $500 при депозите $49 с кошелька»
+      // и фиксация прибыли уходила в саморазгон.
+      if (saved.mode && saved.mode !== this.mode) {
+        this.cash = this.deposit;
+        this.banked = 0;
+        this.nextMilestone = this.deposit * 1.1;
+      }
     }
     const savedSettings = getSetting<any>("engine.settings", null);
     if (savedSettings) {
@@ -444,6 +452,7 @@ export class Engine {
 
   private persist() {
     setSetting("engine.state", {
+      mode: this.mode,
       deposit: this.deposit,
       cash: this.cash,
       halted: this.halted,
@@ -2131,14 +2140,25 @@ export class Engine {
     // ── фиксация прибыли «на холодный кошелёк»
     const equity = this.equityNow();
     if (equity >= this.nextMilestone) {
-      const profit = equity - this.deposit;
-      const take = profit * (this.settings.profitTakePct / 100);
+      // Снимаем ТОЛЬКО из свободного кэша и не больше, чем там есть. Раньше banked
+      // пополнялся даже при нулевом кэше, а equity считает banked внутри себя —
+      // получался саморазгон (equity улетал в 8e11 за пару минут).
+      const profit = Math.max(0, equity - this.deposit);
+      const want = profit * (this.settings.profitTakePct / 100);
+      const free = Math.max(0, this.cash - this.deposit * 0.1);
+      const take = Math.min(want, free);
+      // веху двигаем ВСЕГДА, иначе условие срабатывает на каждом тике
+      const advance = Math.max(equity * 1.1, this.nextMilestone * 1.05);
       if (take > 1) {
         this.banked += take;
-        this.cash = Math.max(0, this.cash - take);
-        this.nextMilestone = equity * 1.1;
+        this.cash -= take; // деньги переехали в банк, equity не меняется
+        this.nextMilestone = advance;
         this.persist();
         journal("SUMMARY", `фиксация прибыли: $${take.toFixed(2)} отложено (всего $${this.banked.toFixed(2)}), следующая веха $${this.nextMilestone.toFixed(0)}`);
+      } else {
+        // брать нечего (кэш занят в позициях) — веху всё равно двигаем
+        this.nextMilestone = advance;
+        this.persist();
       }
     }
   }
